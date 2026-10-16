@@ -1,0 +1,7 @@
+# Keep the working tree LF so the repo behaves the same on Linux and Windows.
+* text=auto eol=lf
+
+*.png binary
+
+# The capture log is ASCII text produced on Windows; keep its recorded bytes.
+evidence/boot_capture.log text eol=lf

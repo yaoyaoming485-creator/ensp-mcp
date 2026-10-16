@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Build output
+build/
+dist/
+
+# Test output written by tests/mcp_client.py
+tests/out/
+
+# OS
+Thumbs.db
+desktop.ini
+.DS_Store
