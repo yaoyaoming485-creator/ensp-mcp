@@ -57,7 +57,7 @@ def ensp_list_models(category: str = "") -> str:
 
 
 @mcp.tool()
-def ensp_create_topology(spec: dict, out_path: str = "") -> str:
+def ensp_create_topology(spec: dict, out_path: str = "", version: str = "", encoding: str = "utf-8") -> str:
     """Create an eNSP ``.topo`` file from a spec.
 
     ``spec`` shape::
@@ -73,23 +73,33 @@ def ensp_create_topology(spec: dict, out_path: str = "") -> str:
 
     ``x``/``y`` are optional (grid auto-layout). For a link you may give either
     ``a_port``/``b_port`` as an interface index, or ``a_if``/``b_if`` as a name
-    such as ``"GE0/0/1"``. The file is written as UTF-16LE with a BOM, which is
-    what eNSP expects.
+    such as ``"GE0/0/1"``.
+
+    The file is written as **UTF-8 without a BOM** even though it declares
+    ``encoding="UNICODE"`` -- that is what eNSP itself produces. Writing UTF-16
+    makes eNSP load the file as zero devices, with no error shown.
 
     Args:
         spec: the topology specification.
         out_path: destination; defaults to <name>.topo in the working directory.
+        version: ``<topo version="...">`` value; defaults to the installed eNSP.
+        encoding: utf-8 (default and correct), utf-8-sig, or utf-16.
     """
     try:
-        path = topo.write(spec, _resolve_out(out_path, spec))
+        path = topo.write(spec, _resolve_out(out_path, spec), version=version or None, encoding=encoding)
     except topo.TopoError as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
     report = topo.validate(spec)
+    with open(path, "rb") as fh:
+        head = fh.read(2)
     return json.dumps(
         {
             "ok": True,
             "path": str(path),
             "bytes": path.stat().st_size,
+            "version": topo.resolve_version(version or None),
+            "encoding": encoding,
+            "has_bom": head in (b"\xff\xfe", b"\xfe\xff", b"\xef\xbb"),
             "devices": report.get("device_count"),
             "links": report.get("link_count"),
             "warnings": report.get("warnings", []),
@@ -145,6 +155,7 @@ def ensp_status() -> str:
         out["vboxmanage"] = None
         out["error"] = str(exc)
     out["ensp_client"] = vbox.find_ensp_client()
+    out["ensp_version"] = vbox.find_ensp_version()
     ensp_procs = vbox.ensp_processes()
     out["ensp_running"] = bool(ensp_procs)
     out["ensp_processes"] = ensp_procs

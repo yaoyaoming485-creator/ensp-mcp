@@ -104,7 +104,22 @@ def find_vboxmanage() -> str:
 
 
 def find_ensp_client() -> str | None:
+    return _ensp_install()["client"]
+
+
+def find_ensp_version() -> str | None:
+    """The eNSP release, e.g. ``1.3.00.100``.
+
+    eNSP's uninstall entry reports this string, and it is the same value eNSP
+    writes into a topology's ``<topo version="...">`` attribute.
+    """
+    return _ensp_install()["version"]
+
+
+def _ensp_install() -> dict:
+    """Locate eNSP once: executable path plus installed version."""
     candidates: list[str] = []
+    version: str | None = None
     if os.name == "nt":
         try:
             import winreg
@@ -122,9 +137,15 @@ def find_ensp_client() -> str | None:
                             try:
                                 with winreg.OpenKey(root, winreg.EnumKey(root, i)) as sub:
                                     name, _ = winreg.QueryValueEx(sub, "DisplayName")
-                                    if "eNSP" in str(name):
-                                        loc, _ = winreg.QueryValueEx(sub, "InstallLocation")
-                                        candidates.append(os.path.join(str(loc), "eNSP_Client.exe"))
+                                    if "eNSP" not in str(name):
+                                        continue
+                                    if version is None:
+                                        try:
+                                            version = str(winreg.QueryValueEx(sub, "DisplayVersion")[0])
+                                        except OSError:
+                                            pass
+                                    loc, _ = winreg.QueryValueEx(sub, "InstallLocation")
+                                    candidates.append(os.path.join(str(loc), "eNSP_Client.exe"))
                             except OSError:
                                 continue
                 except OSError:
@@ -133,10 +154,8 @@ def find_ensp_client() -> str | None:
             pass
         for root in (r"C:\Program Files\Huawei\eNSP", r"C:\Program Files (x86)\Huawei\eNSP"):
             candidates.append(os.path.join(root, "eNSP_Client.exe"))
-    for c in candidates:
-        if Path(c).is_file():
-            return c
-    return None
+    client = next((c for c in candidates if Path(c).is_file()), None)
+    return {"client": client, "version": version}
 
 
 def vboxmanage_path() -> str:

@@ -12,7 +12,11 @@ Reverse-engineered layout of the format (eNSP 1.3.00.100)::
 
 Two details are easy to get wrong and both are handled here:
 
-* the file is **UTF-16LE with a BOM** and declares ``encoding="UNICODE"``;
+* the file is **UTF-8 without a BOM**, yet still declares
+  ``encoding="UNICODE"``.  All 40 example topologies shipped with eNSP
+  1.3.00.100 are like this, as are the files eNSP itself saves.  Writing
+  UTF-16LE (what the declaration suggests) makes eNSP load the file without
+  any error and show **0 devices** -- the failure is silent;
 * ``srcIndex`` / ``tarIndex`` are indices into the device model's flattened
   interface list, *not* slot numbers.
 """
@@ -28,6 +32,32 @@ from xml.sax.saxutils import escape, quoteattr
 from . import models
 
 TOPO_VERSION = "1.3.00.100"
+
+#: Encodings eNSP is known to accept.  ``utf-8`` (no BOM) is the only one that
+#: matches what eNSP writes itself, and the only one verified to open cleanly on
+#: older releases (V1.2.00.390 rejects UTF-16LE by loading zero devices).
+DEFAULT_ENCODING = "utf-8"
+ENCODINGS = ("utf-8", "utf-8-sig", "utf-16")
+
+
+def resolve_version(explicit: str | None = None) -> str:
+    """Pick the ``<topo version="...">`` value.
+
+    eNSP accepts a missing or mismatched version, so this is not load-bearing the
+    way the encoding is -- but matching the installed release is free and avoids
+    surprises.  Explicit value wins, then the installed eNSP, then a default.
+    """
+    if explicit:
+        return str(explicit)
+    try:
+        from . import vbox
+
+        detected = vbox.find_ensp_version()
+        if detected:
+            return detected
+    except Exception:  # noqa: BLE001 - detection is best effort
+        pass
+    return TOPO_VERSION
 
 # Canvas geometry.  A device occupies roughly 80x60 px; edit_left/edit_top are
 # the offsets eNSP stores for the inline name editor.
@@ -92,7 +122,7 @@ def _port_index(model: models.Model, spec: dict, key_int: str, key_name: str, de
     return idx
 
 
-def build(spec: dict) -> str:
+def build(spec: dict, version: str | None = None) -> str:
     """Turn a JSON spec into ``.topo`` XML text.
 
     Spec::
@@ -188,10 +218,10 @@ def build(spec: dict) -> str:
     dev_xml: list[str] = []
     for r in resolved:
         dev_xml.append(
-            f'        <dev id="{r["id"]}" name={quoteattr(r["name"])} '
+            f'        <dev id="{r["id"]}" name={quoteattr(r["name"])} poe="0" '
             f'model="{r["model"].name}" settings={quoteattr(r["settings"])} '
             f'system_mac="{r["mac"]}" com_port="{r["com_port"]}" bootmode="{r["bootmode"]}" '
-            f'cx="{r["cx"]}" cy="{r["cy"]}" '
+            f'cx="{r["cx"]:.6f}" cy="{r["cy"]:.6f}" '
             f'edit_left="{r["cx"] + EDIT_DX}" edit_top="{r["cy"] + EDIT_DY}">\n'
             f'{r["model"].xml}\n'
             f"        </dev>"
@@ -226,7 +256,7 @@ def build(spec: dict) -> str:
 
     parts = [
         '<?xml version="1.0" encoding="UNICODE" ?>',
-        f'<topo version="{TOPO_VERSION}">',
+        f'<topo version="{escape(resolve_version(version))}">',
         "    <devices>",
         *dev_xml,
         "    </devices>",
@@ -245,13 +275,25 @@ def build(spec: dict) -> str:
     return "\n".join(parts)
 
 
-def write(spec: dict, out_path: str | Path) -> Path:
+def write(
+    spec: dict,
+    out_path: str | Path,
+    version: str | None = None,
+    encoding: str = DEFAULT_ENCODING,
+) -> Path:
+    """Write a topology file.
+
+    ``encoding`` defaults to ``utf-8`` **without a BOM**, which is what eNSP
+    writes and reads.  ``utf-16`` is offered only because some third-party
+    generators emit it; eNSP silently loads such a file as zero devices.
+    """
+    if encoding not in ENCODINGS:
+        raise TopoError(f"unsupported encoding {encoding!r}; choose one of {', '.join(ENCODINGS)}")
     path = Path(out_path)
     if path.suffix.lower() != ".topo":
         path = path.with_suffix(".topo")
     path.parent.mkdir(parents=True, exist_ok=True)
-    # eNSP writes UTF-16LE with a BOM and declares encoding="UNICODE".
-    path.write_text(build(spec), encoding="utf-16")
+    path.write_text(build(spec, version=version), encoding=encoding)
     return path
 
 
@@ -272,7 +314,12 @@ def read(path: str | Path) -> dict:
     """Parse a ``.topo`` into the same shape :func:`build` accepts."""
     path = Path(path)
     raw = path.read_bytes()
-    text = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8", "replace")
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        encoding, has_bom, text = "utf-16", True, raw.decode("utf-16")
+    elif raw[:3] == b"\xef\xbb\xbf":
+        encoding, has_bom, text = "utf-8-sig", True, raw.decode("utf-8-sig")
+    else:
+        encoding, has_bom, text = "utf-8", False, raw.decode("utf-8", "replace")
     root = ET.fromstring(text)
     if root.tag != "topo":
         raise TopoError(f"{path} is not an eNSP topology (root <{root.tag}>)")
@@ -336,7 +383,17 @@ def read(path: str | Path) -> dict:
                 "color": _as_int(s.get("color")),
             }
         )
-    return {"version": root.get("version"), "devices": devices, "links": links, "labels": labels, "boxes": boxes}
+    return {
+        "version": root.get("version"),
+        "encoding": encoding,
+        "has_bom": has_bom,
+        # eNSP loads a UTF-16 topology without any error and shows zero devices.
+        "loads_in_ensp": encoding == "utf-8" and not has_bom,
+        "devices": devices,
+        "links": links,
+        "labels": labels,
+        "boxes": boxes,
+    }
 
 
 def _if_at(device: dict, index: str | None) -> str | None:

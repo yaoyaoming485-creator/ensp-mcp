@@ -63,9 +63,14 @@ tmp = Path(tempfile.mkdtemp(prefix="ensp-smoke-"))
 out = topo.write(spec, tmp / "lab.topo")
 check("file written", out.is_file(), str(out))
 raw = out.read_bytes()
-check("UTF-16LE BOM", raw[:2] == b"\xff\xfe", raw[:2].hex())
-check("declares UNICODE", 'encoding="UNICODE"' in raw.decode("utf-16"))
+check("no BOM (eNSP rejects a BOM'd file by loading 0 devices)",
+      not raw.startswith((b"\xff\xfe", b"\xfe\xff", b"\xef\xbb")), raw[:3].hex())
+check("declares encoding=\"UNICODE\" like eNSP does",
+      b'encoding="UNICODE"' in raw[:80], raw[:60].decode("utf-8", "replace"))
 back = topo.read(out)
+check("round-trip reports utf-8", back["encoding"] == "utf-8" and back["has_bom"] is False,
+      f"{back['encoding']} bom={back['has_bom']}")
+check("round-trip flagged as eNSP-loadable", back["loads_in_ensp"] is True)
 check("device count", len(back["devices"]) == 4, str(len(back["devices"])))
 check("link count", len(back["links"]) == 3, str(len(back["links"])))
 r1 = next(d for d in back["devices"] if d["name"] == "R1")

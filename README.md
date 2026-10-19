@@ -14,14 +14,28 @@ VirtualBox control interface eNSP already drives.
 
 ### 1. The `.topo` format
 
-A topology is XML, written as **UTF-16LE with a BOM**, declaring
-`<?xml version="1.0" encoding="UNICODE" ?>` and `<topo version="1.3.00.100">`:
+A topology is XML. It declares `<?xml version="1.0" encoding="UNICODE" ?>` —
+**and that declaration is a lie.** The file must be **UTF-8 without a BOM**.
+All 40 example topologies shipped with eNSP 1.3.00.100 are UTF-8, as are the
+files eNSP itself saves, and an older release (V1.2.00.390) is the same.
+
+Get this wrong and eNSP shows **no error at all**: it loads the topology as
+zero devices and the status bar reads `总数：0`. A UTF-16LE file — which is what
+the `encoding="UNICODE"` attribute suggests, and what some third-party
+generators emit — is silently discarded. This server wrote UTF-16 until that
+was measured; `ensp_read_topology` now reports `encoding`, `has_bom` and
+`loads_in_ensp` so the mistake is visible.
+
+The `<topo>` element's `version` attribute is **optional** — plenty of shipped
+examples have a bare `<topo>`. When present it is written to match the installed
+eNSP (`ensp_status` reports it), falling back to `1.3.00.100`.
 
 ```xml
+<?xml version="1.0" encoding="UNICODE" ?>
 <topo version="1.3.00.100">
   <devices>
-    <dev id="UUID" name="R1" model="AR2220" settings="" system_mac=""
-         com_port="2000" bootmode="0" cx="150" cy="250"
+    <dev id="UUID" name="R1" poe="0" model="AR2220" settings="" system_mac=""
+         com_port="2000" bootmode="0" cx="150.000000" cy="250.000000"
          edit_left="177" edit_top="304">
       <slot number="slot17" isMainBoard="1">
         <interface sztype="Ethernet" interfacename="GE" count="1" />
@@ -40,6 +54,9 @@ A topology is XML, written as **UTF-16LE with a BOM**, declaring
   <txttips>…</txttips>
 </topo>
 ```
+
+Coordinates are floats (`cx="150.000000"`); the inline-editor offsets
+`edit_left`/`edit_top` are integers.
 
 The one non-obvious rule: **`srcIndex`/`tarIndex` are indices into the device
 model's flattened interface list**, in the order the `<interface>` elements
@@ -181,7 +198,7 @@ as `mcp__ensp__*`:
 * `ensp_console_type` / `ensp_console_key` / `ensp_console_send_lines` → the
   typed text appeared on the guest's screen (`box login: mcp`).
 
-Two bugs were found and fixed by these runs, both worth knowing about:
+Three bugs were found and fixed, and the third is the instructive one:
 
 1. **Port numbering.** eNSP numbers ports continuously across the `<interface>`
    elements that declare them, so AR2220's "GE x1" followed by "GE x2" is
@@ -190,6 +207,17 @@ Two bugs were found and fixed by these runs, both worth knowing about:
 2. **`ensp_processes` matched itself.** The server runs as `ensp-mcp.exe`, so a
    *prefix* match on `"ensp"` made `ensp_status` report `ensp_running: true` with
    eNSP closed. It now matches exact process names.
+3. **Wrong file encoding.** The writer emitted UTF-16LE, copying a third-party
+   generator instead of reading what eNSP produces. eNSP accepted the file
+   silently and showed zero devices. Caught by opening a generated topology in
+   eNSP on a second machine — the one thing the automated suites could not do,
+   because eNSP requires elevation and refuses injected input from an
+   unelevated process. The suites now assert the absence of a BOM, and
+   `ensp_read_topology` reports `loads_in_ensp`.
+
+The lesson worth keeping: the test suites verified structure, round-tripping and
+the MCP protocol, but never that eNSP *accepted* a generated file. Format
+conformance is not the same as the consumer accepting the output.
 
 ## Known limitations
 

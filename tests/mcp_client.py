@@ -182,7 +182,9 @@ try:
     blocks = call(srv, "ensp_create_topology", {"spec": spec, "out_path": out_topo})
     created = json.loads(text_of(blocks))
     check("ensp_create_topology", created.get("ok") and Path(out_topo).is_file(), json.dumps(created))
-    check("  written as UTF-16LE", Path(out_topo).read_bytes()[:2] == b"\xff\xfe")
+    check("  written as UTF-8 without BOM",
+          created.get("has_bom") is False and created.get("encoding") == "utf-8",
+          f"encoding={created.get('encoding')} has_bom={created.get('has_bom')}")
 
     blocks = call(srv, "ensp_read_topology", {"path": out_topo})
     back = json.loads(text_of(blocks))
