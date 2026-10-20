@@ -225,8 +225,17 @@ def vm_state(vm_name: str) -> str:
 def console_channels(vm_name: str) -> dict:
     """Describe how to reach a device's console.
 
-    ``screen`` is the channel that works; ``serial_pipe`` is reported because it
-    looks plausible and is a trap (it carries a heartbeat, not a console).
+    Two different things are often confused here:
+
+    * ``screen`` drives the VirtualBox virtual screen. For an eNSP AR device
+      that screen shows the **Tiny Core Linux guest**, not the router, so it is
+      of limited use for talking to the device.
+    * ``serial_pipe`` is the COM2 host pipe. It carries the guest agent's
+      *configuration handshake* (a 4-byte challenge and the 28+27 byte reply),
+      which is why it looks like a serial console and is not one.
+
+    The router's own console is a plain-text TCP service on the guest itself
+    (port 40000) -- see ``agentd.py`` and the ``ensp_vrp_*`` tools.
     """
     info = machine_readable(vm_name)
     serial = None
@@ -242,6 +251,8 @@ def console_channels(vm_name: str) -> dict:
         "vrdp_port": _vrde_port(info),
         "serial_pipe": serial,
         "serial_pipe_is_console": False,
+        "serial_pipe_carries": "agentd configuration handshake (not console text)",
+        "vrp_console": "guest TCP 40000 - see ensp_vrp_command",
     }
 
 

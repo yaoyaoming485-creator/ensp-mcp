@@ -180,9 +180,12 @@ def ensp_status() -> str:
 def ensp_list_devices(running_only: bool = True) -> str:
     """List device VMs and how to reach each one's console.
 
-    ``serial_pipe`` is reported for completeness but is **not** the console: it
-    carries a fixed 4-byte heartbeat frame once per second. The working console
-    is the virtual screen -- use ensp_console_screen / ensp_console_type.
+    ``serial_pipe`` is the COM2 host pipe. It is **not** the console: it
+    carries the guest agent's configuration handshake (a 4-byte challenge and
+    the 28+27 byte reply), which is why it looks like a serial console and is
+    not one. The router's own CLI is a plain-text service on the guest
+    (TCP 40000) -- use ``ensp_vrp_command`` for that, and ``ensp_vrp_list_devices``
+    to find the guest addresses.
 
     Args:
         running_only: only include VMs that are currently running.
@@ -229,10 +232,15 @@ def ensp_open_topology(path: str, wait_seconds: float = 0.0) -> str:
 
 @mcp.tool(structured_output=False)
 def ensp_console_screen(vm: str, save_path: str = "") -> list[Any]:
-    """Capture a running device's console screen.
+    """Capture a running device's virtual screen.
 
-    The console is a 720x400 VGA text mode, so it comes back as an image. Read
-    the attached PNG to see the device output.
+    The screen is a 720x400 VGA text mode, so it comes back as an image. Read
+    the attached PNG to see what is on it.
+
+    **For an eNSP AR device this is the guest's screen, not the router's**: the
+    guest is a Tiny Core Linux appliance sitting at a login prompt, while the
+    router runs as a separate process. To talk to the router use
+    ``ensp_vrp_command``, which returns exact text over the guest's TCP 40000.
 
     Args:
         vm: the device name, which is also the VirtualBox VM name (e.g. "R1").
