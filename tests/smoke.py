@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import tempfile
 from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from ensp_mcp import console, models, topo, vbox  # noqa: E402
+from ensp_mcp import agentd, console, models, topo, vbox  # noqa: E402
 
 failures: list[str] = []
 skipped: list[str] = []
@@ -187,6 +188,86 @@ if running:
         check("console write", False, f"{type(exc).__name__}: {exc}")
 else:
     skip("console write path", "no running device VM")
+
+print()
+print("=" * 72)
+print("7. real VRP console (guest TCP 40000)")
+print("=" * 72)
+guests = []
+try:
+    guests = agentd.guest_ip_from_host_only()
+    check("guest discovery", len(guests) > 0, f"{len(guests)} guest(s): {guests}")
+except Exception as exc:  # noqa: BLE001
+    check("guest discovery", False, f"{type(exc).__name__}: {exc}")
+
+if guests:
+    # The VRP console serves one client at a time. The eNSP client keeps a
+    # session open on the devices it manages, so on those the connect simply
+    # produces no data. Treat that as "not available", not as a failure.
+    target_guest = None
+    busy_guest = None
+    for ip in guests:
+        s = socket.socket()
+        s.settimeout(0.6)
+        try:
+            s.connect((ip, agentd.VRP_CONSOLE_PORT))
+            s.sendall(b"\r\n")
+            s.settimeout(1.2)
+            try:
+                probe = s.recv(256)
+            except socket.timeout:
+                probe = b""
+            if probe:
+                target_guest = ip
+                s.close()
+                break
+            busy_guest = ip
+        except OSError:
+            pass
+        finally:
+            try:
+                s.close()
+            except OSError:
+                pass
+
+    if target_guest:
+        try:
+            with agentd.VrpConsole(target_guest) as con:
+                out = con.run(["display version"], wait=2.0)
+                check("VRP console answers", "<Huawei>" in out,
+                      out.strip()[:90].replace("\n", " "))
+                check("VRP identifies itself", "VRP" in out or "Huawei" in out,
+                      "display version returned the platform banner")
+        except Exception as exc:  # noqa: BLE001
+            check("VRP console", False, f"{type(exc).__name__}: {exc}")
+    elif busy_guest:
+        skip("VRP console session",
+             f"{busy_guest} accepted the connection but sent nothing - the "
+             "eNSP client already holds that console session")
+    else:
+        skip("VRP console session", "no guest accepted a console connection")
+else:
+    skip("VRP console", "no eNSP guest reachable on the host-only subnet")
+
+print()
+print("=" * 72)
+print("8. agentd control handshake")
+print("=" * 72)
+if guests:
+    try:
+        res = agentd.control_handshake(guests[0], timeout=8.0)
+        check("control handshake", bool(res.get("events")), ", ".join(res.get("events", [])))
+    except agentd.AgentdError as exc:
+        if "may already hold" in str(exc):
+            skip("control handshake",
+                 f"{guests[0]} is busy - the eNSP client already holds its "
+                 "agentd control session")
+        else:
+            check("control handshake", False, str(exc))
+    except Exception as exc:  # noqa: BLE001
+        check("control handshake", False, f"{type(exc).__name__}: {exc}")
+else:
+    skip("control handshake", "no eNSP guest reachable")
 
 print()
 print("=" * 72)

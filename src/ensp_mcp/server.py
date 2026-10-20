@@ -1,10 +1,14 @@
 """ensp-mcp: an MCP server for Huawei eNSP.
 
-Two capabilities, both reverse-engineered from an installed eNSP 1.3.00.100:
+Three capabilities, all reverse-engineered from an installed eNSP 1.3.00.100:
 
 1. **Topology authoring** -- build, read and validate ``.topo`` files offline.
-2. **Device console** -- read and drive any running device's console through the
-   VirtualBox virtual screen (``screenshotpng`` + ``keyboardputstring``).
+2. **Screen console** -- read and drive a device's VirtualBox virtual screen
+   (``screenshotpng`` + ``keyboardputstring``). For an eNSP AR device this
+   screen shows the Tiny Core Linux guest, *not* the router CLI.
+3. **Real VRP console** -- run commands on the router itself and get exact
+   text back. The guest's VRP process serves a plain-text console on TCP
+   40000; this is the same channel the eNSP client uses.
 
 Tool names are prefixed ``ensp_`` so they are easy to allow-list.
 """
@@ -18,7 +22,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer, Image
 
-from . import console, models, topo, vbox
+from . import agentd, console, models, topo, vbox
 
 mcp = MCPServer("ensp")
 
@@ -302,6 +306,97 @@ def ensp_console_send_lines(vm: str, lines: list[str], settle: float = 0.45) -> 
     except (vbox.VBoxError, console.ConsoleError) as exc:
         return f"failed while sending to {vm}: {exc}"
     return f"sent {sent} of {len(lines)} lines to {vm} (settle={settle}s); capture the screen to verify"
+
+
+# --------------------------------------------------------------------------
+# real VRP console tools
+#
+# The tools above drive the VirtualBox virtual screen, which for an eNSP AR
+# device shows the Tiny Core Linux guest -- not the router CLI.  The router's
+# own console is a plain-text TCP service on the guest (port 40000); these
+# tools talk to it directly and therefore return exact text.
+# --------------------------------------------------------------------------
+
+@mcp.tool()
+def ensp_vrp_list_devices(prefix: str = "192.168.56.") -> str:
+    """List eNSP guest devices reachable on the host-only subnet.
+
+    A guest is a device whose ``agentd`` answers on TCP 56789; the VRP console
+    itself listens on TCP 40000 of the same guest.
+
+    Args:
+        prefix: the host-only subnet prefix, e.g. "192.168.56.".
+    """
+    try:
+        guests = agentd.guest_ip_from_host_only(prefix)
+    except OSError as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    rows = []
+    for ip in guests:
+        ports = agentd.probe_guest_ports(ip)
+        rows.append({
+            "guest_ip": ip,
+            "agentd_control": ports.get(agentd.AGENTD_CONTROL_PORT, False),
+            "vrp_console": ports.get(agentd.VRP_CONSOLE_PORT, False),
+        })
+    return json.dumps({"ok": True, "count": len(rows), "devices": rows},
+                      ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def ensp_vrp_command(guest_ip: str, commands: list[str], wait: float = 1.5) -> str:
+    """Run VRP commands on a device and return the exact text output.
+
+    This is the real router CLI: the guest's VRP process serves a plain-text
+    console on TCP 40000, the same channel the eNSP client itself uses. Output
+    comes back verbatim -- no screenshots and no OCR.
+
+    The console accepts one client at a time, so all commands run over a single
+    short-lived session. A throw-away newline is sent first to wake the session.
+
+    Args:
+        guest_ip: the device's address on the host-only subnet, e.g. "192.168.56.2".
+        commands: the VRP commands to run, in order.
+        wait: seconds to wait for each command's output.
+    """
+    if not commands:
+        return json.dumps({"ok": False, "error": "no commands given"}, ensure_ascii=False)
+    try:
+        with agentd.VrpConsole(guest_ip) as con:
+            output = con.run(commands, wait=wait)
+            banner = con.banner
+    except agentd.VrpConsoleError as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    return json.dumps({
+        "ok": True,
+        "guest_ip": guest_ip,
+        "commands": commands,
+        "banner": banner.strip(),
+        "output": output,
+    }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def ensp_vrp_agent_handshake(guest_ip: str, timeout: float = 10.0) -> str:
+    """Run the guest agentd control handshake and report what the device says.
+
+    The guest listens on TCP 56789 and sends a 44-byte "boot" frame; answering
+    with code 1 releases its start state and it then reports prepare / DEV0 /
+    DEV1 / DEV2. Useful to confirm a device is actually up.
+
+    The control socket serves one client at a time, so a device that the eNSP
+    client is already driving will not answer; the returned error says so.
+
+    Args:
+        guest_ip: the device's address on the host-only subnet.
+        timeout: seconds to wait for the guest's frames.
+    """
+    try:
+        result = agentd.control_handshake(guest_ip, timeout=timeout)
+    except agentd.AgentdError as exc:
+        return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
+    result["ok"] = True
+    return json.dumps(result, ensure_ascii=False, indent=2)
 
 
 def main() -> None:

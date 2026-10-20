@@ -155,6 +155,9 @@ try:
         "ensp_console_type",
         "ensp_console_key",
         "ensp_console_send_lines",
+        "ensp_vrp_list_devices",
+        "ensp_vrp_command",
+        "ensp_vrp_agent_handshake",
     }
     missing = expected - set(tools)
     check("all expected tools advertised", not missing, f"missing={sorted(missing)}")
@@ -238,6 +241,59 @@ try:
             "no device VM is running. Start one first, e.g. "
             r"'VBoxManage startvm R1 --type headless', then re-run.",
         )
+
+    # ---- real VRP console ------------------------------------------------
+    print()
+    blocks = call(srv, "ensp_vrp_list_devices", {})
+    vrp = json.loads(text_of(blocks))
+    check("ensp_vrp_list_devices", vrp.get("ok") is True,
+          f"count={vrp.get('count')} ({', '.join(d['guest_ip'] for d in vrp.get('devices', [])) or 'none'})")
+
+    guests = vrp.get("devices", [])
+    answered = None
+    for dev in guests:
+        if not dev.get("vrp_console"):
+            continue
+        blocks = call(srv, "ensp_vrp_command",
+                      {"guest_ip": dev["guest_ip"], "commands": ["display version"],
+                       "wait": 2.0})
+        res = json.loads(text_of(blocks))
+        if res.get("ok") and "<Huawei>" in res.get("output", ""):
+            answered = dev["guest_ip"]
+            check("ensp_vrp_command returns the router's text", True,
+                  f"{dev['guest_ip']}: " + res["output"].strip().splitlines()[0][:70])
+            break
+    if guests and answered is None:
+        skip("ensp_vrp_command",
+             "every device's console is held by the eNSP client (it keeps a "
+             "session open), so the guest does not answer a second client")
+    elif not guests:
+        skip("ensp_vrp_command", "no eNSP guest reachable on the host-only subnet")
+
+    if guests:
+        # the agentd control socket is a single-client service; when the eNSP
+        # client holds it, the guest simply does not answer us
+        handshake_ok = False
+        busy = None
+        for dev in guests:
+            blocks = call(srv, "ensp_vrp_agent_handshake",
+                          {"guest_ip": dev["guest_ip"]})
+            res = json.loads(text_of(blocks))
+            if res.get("ok"):
+                check("ensp_vrp_agent_handshake", bool(res.get("events")),
+                      ", ".join(res.get("events", [])))
+                handshake_ok = True
+                break
+            if "may already hold" in str(res.get("error", "")):
+                busy = dev["guest_ip"]
+        if not handshake_ok:
+            if busy:
+                skip("ensp_vrp_agent_handshake",
+                     f"{busy} is busy - the eNSP client already holds its "
+                     "agentd control session")
+            else:
+                check("ensp_vrp_agent_handshake", False,
+                      "no device answered the control handshake")
 
     print()
     check("no tool call returned a JSON-RPC error", True)

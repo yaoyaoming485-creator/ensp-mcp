@@ -63,34 +63,107 @@ model's flattened interface list**, in the order the `<interface>` elements
 appear — not slot numbers, not port numbers on the silkscreen. `models.py`
 carries that index space per model.
 
-### 2. The device console is a screen, not a stream
+### 2. The device console is a TCP service, not a screen
 
-Each eNSP device is a VirtualBox VM whose **name equals the topology device
-name**. The VM's virtual screen runs a 720x400 VGA text mode (80x25 cells), and
-that screen *is* the console — eNSP itself shows it over VRDP.
+This is the finding that matters, and it corrects an earlier conclusion in
+this project (and in other write-ups of eNSP) that the console could only be
+reached by screenshotting the VirtualBox screen.
 
-So the console is fully driveable from the command line:
+**The VRP process runs inside the guest, and it serves a plain-text console on
+guest TCP 40000.** On a live eNSP host the console connection shows up in
+`netstat` as:
 
-| Direction | Mechanism |
-| --- | --- |
-| read | `VBoxManage controlvm <vm> screenshotpng <file>` |
-| write | `VBoxManage controlvm <vm> keyboardputstring` / `keyboardputscancode` |
+```
+TCP  192.168.56.1:51442  192.168.56.2:40000  ESTABLISHED  <eNSP_VBoxServer>
+```
 
-**The serial port is a trap.** Each device VM has a host pipe on COM2
-(`uartmode2="server,\\.\pipe\<name>"`), which looks exactly like a serial
-console. It is not one. Measured from t=0 on a booting AR clone, that pipe emits
-a fixed 4-byte frame (`6a 07 e7 ab`) once per second and **never a single byte
-of ASCII** — across a whole boot. Driving it produces nothing but garbage.
-(An earlier iteration of this project did exactly that and wasted a lot of time;
-the measurement is in `evidence/boot_capture.log`.)
+so the eNSP client itself talks to the router over this socket. Connecting to
+it directly returns the router's real output:
 
-Two smaller findings worth knowing:
+```
+<Huawei>display interface brief
+Interface                   PHY   Protocol InUti OutUti   inErrors  outErrors
+Ethernet0/0/0               down  down        0%     0%          0          0
+...
+Ethernet0/0/8               down  down        0%     0%          0          0
+NULL0                       up    up(s)       0%     0%          0          0
+<Huawei>
+```
 
-* the AR device guest is a **Tiny Core Linux** appliance (`Core Linux`, kernel
-  `3.0.21-tinycore`, hostname `box`) that boots to a login prompt — it does not
-  auto-start VRP on its own;
-* `eNSP_VBoxServer.exe` listens on TCP **65510**
-  (`vboxserver\config_vbox.ini`), which is eNSP's internal client/server channel.
+That is exact text — no screenshots, no OCR, no window automation, and no
+elevation. It also removes the character-drop and paging problems that make
+screen-scraping unreliable.
+
+The VirtualBox virtual screen is a *different* thing: for an AR device it
+shows the **Tiny Core Linux guest** (`Core Linux`, kernel `3.0.21-tinycore`,
+hostname `box`) sitting at a login prompt, because the router runs in a
+separate process on that same machine. The screen tools
+(`ensp_console_screen` / `ensp_console_type` / ...) therefore drive the guest,
+not the router — they are kept for completeness, but `ensp_vrp_command` is the
+one you want.
+
+### 3. How the guest agent talks to the host
+
+The guest boots Tiny Core Linux and runs `agentd static` (see
+`/opt/bootlocal.sh` inside the device image). `agentd` is the piece that
+negotiates with the host, and it uses four channels:
+
+| # | Channel | Direction | Purpose |
+| --- | --- | --- | --- |
+| 1 | serial (`/dev/ttyS1` ↔ host COM2 pipe) | both | configuration handshake |
+| 2 | control (`guest:56789`) | host → guest | start the VRP processes |
+| 3 | media (`host:192.168.56.1:<port>`) | guest → host | the guest dials **back** to the host |
+| 4 | console (`guest:40000`) | host → guest | the router's own VRP CLI |
+
+**Channel 1 — the configuration handshake.** `agentd` writes a 4-byte
+challenge `htonl(rand())` to the serial port and then blocks reading the
+reply. The reply is 28 bytes followed by 27 bytes:
+
+| Offset | Size | Meaning |
+| --- | --- | --- |
+| `A[0:4]` | 4 | the challenge, echoed verbatim (otherwise `Invalid key.`) |
+| `A[4:6]` | 2 | media port, **network byte order** (the guest applies `ntohs`) |
+| `A[8:12]` | 4 | the guest's own IP |
+| `A[12:16]` | 4 | netmask (0 ⇒ the guest skips `SIOCSIFNETMASK`) |
+| `A[16:26]` | 10 | device id, first 10 bytes |
+| `B[0:27]` | 27 | device id, last 27 bytes — 37 bytes total, the "ssid" key |
+
+The guest then configures `eth0` itself with
+`ioctl(SIOCSIFADDR/SIOCSIFNETMASK/SIOCSIFFLAGS)` using the IP we supplied, and
+runs `ip_test`/`ping_test`. **The only value that has to be correct is the
+challenge**; everything else is ours to choose.
+
+**Channel 2 — control.** The guest *listens* on TCP 56789 and speaks fixed
+44-byte frames: `[u32 big-endian code][37-byte ssid][3 bytes padding]`.
+
+| Code | Direction | Meaning |
+| --- | --- | --- |
+| 0 | guest → host | boot (carries the ssid) |
+| 1 | host → guest | "go" — releases the start state |
+| 2 / 3 | guest → host | prepare OK / failed |
+| 4 / 5 | guest → host | DEV0 started / failed |
+| 6 / 7 | guest → host | DEV1 started / failed |
+| 8 / 9 | guest → host | DEV2 started / failed |
+
+The socket must stay open for the life of the device: `agentd` registers
+`atexit(power_off)` and joins its message thread, so closing the control
+socket powers the whole guest off.
+
+**Channel 3 — the media server.** This is the counter-intuitive one: the
+guest **connects back to the host** on `192.168.56.1:<media port>`, where the
+port is the one we handed over in `A[4:6]`. `send_ssid()` then pushes every
+SysV message-queue item of type 7 as a 244-byte frame
+(`[240 bytes payload][37-byte ssid at offset 178]`). With no listener the
+guest logs *"Failed to connect to remote media server: Connection refused."*
+and the SSID never reaches the host.
+
+**Device images.** The router itself is three ELF binaries per device —
+`dev0`, `dev1`, `dev2` — unpacked at boot from `dev_base_0/1/2` by `agentd`'s
+`decompress()`. They are genuine Huawei VRP (the image contains
+`hi3ms.huawei.com` endpoints and a GVRP stack). Their `resource.cfg` pins the
+interface sockets to a fixed address; if that address is not the one the guest
+actually owns, VRP exits with `Start port 0 fail` /
+`VPORT_Hal_PortEnable failed!`. `scripts/patch_resource.py` rewrites it.
 
 ## Install
 
@@ -158,17 +231,51 @@ effect without restarting the web server.
 | `ensp_status` | is eNSP/VirtualBox present, what is running |
 | `ensp_list_devices` | device VMs and their console channels |
 
-**Console**
+**Console — the real VRP CLI**
 
 | Tool | Purpose |
 | --- | --- |
-| `ensp_console_screen` | capture the console; returns the PNG |
+| `ensp_vrp_list_devices` | find the devices on the host-only subnet and their open ports |
+| `ensp_vrp_command` | run VRP commands, get the router's **exact text** back |
+| `ensp_vrp_agent_handshake` | run the guest agentd control handshake and report what the device says |
+
+**Console — the VirtualBox screen**
+
+| Tool | Purpose |
+| --- | --- |
+| `ensp_console_screen` | capture the screen; returns the PNG |
 | `ensp_console_type` | type text (+ optional Enter) |
 | `ensp_console_key` | send a named key (`ctrl-z`, arrows, `F1`…) |
 | `ensp_console_send_lines` | send a configuration block, one line at a time |
 
-Typical loop: `ensp_console_type(vm="R1", text="system-view")` →
-`ensp_console_screen(vm="R1")` → read the image.
+Prefer `ensp_vrp_command` for anything that talks to the router: it returns
+text, it does not drop characters, and it is not affected by the paging
+prompt. The screen tools drive the guest's Linux console instead.
+
+```jsonc
+// ensp_vrp_command(guest_ip="192.168.56.101", commands=["display version"])
+{
+  "ok": true,
+  "output": "=== display version\nHuawei Versatile Routing Platform Software\n\
+             VRP (R) software, Version 5.130 (AR200 V200R003C00)\n..."
+}
+```
+
+### Driving a device without the eNSP client
+
+`scripts/host_side.py` replaces the eNSP client for one device: it is the
+pipe server, the media server and the control client in one process.
+
+```bash
+# the device's UART must point at a pipe we create (see evidence/agentd-protocol.md)
+VBoxManage startvm MYR2 --type headless
+python scripts/host_side.py --pipe '\\.\pipe\MYR2-COM2' --guest-ip 192.168.56.101
+python scripts/vrp_cli.py --guest 192.168.56.101 display version
+```
+
+`scripts/patch_resource.py` rewrites a guest's `resource.cfg` so VRP's
+interface sockets point at an address the guest actually owns — without it
+VRP exits with `VPORT_Hal_PortEnable failed!`.
 
 ## Verification
 
