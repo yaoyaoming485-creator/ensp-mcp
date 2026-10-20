@@ -7,12 +7,17 @@ Measured on Windows 11 (build 22621) with eNSP `V1.3.00.100` and Oracle
 VirtualBox `7.2.18 r175117`, against device VM `R1`, an eNSP AR clone whose disk
 chain resolves to `C:\Program Files\Huawei\eNSP\VBoxServer\AR_Base\AR_Base.vdi`.
 
-## `agentd-protocol.md` + `agentd.elf` — the guest agent
+## `agentd-protocol.md` — the guest agent
 
 The full protocol, recovered by disassembling the guest's `agentd` binary and
-confirmed against a live guest. `agentd.elf` is that binary (41,599 bytes,
-SHA-256 `c2f686c9d2dfd512978d5b6f0b3611b3e0a9404bc2417efdc83a73ca2f2c9ad5`,
-not stripped), kept so the analysis can be re-run.
+confirmed against a live guest.
+
+`agentd` is a vendor file from the eNSP device image, so it is **not
+redistributed in this repository** (see `.gitignore`). The notes identify it
+exactly — 41,599 bytes, ELF 32-bit LSB i386, not stripped, SHA-256
+`c2f686c9d2dfd512978d5b6f0b3611b3e0a9404bc2417efdc83a73ca2f2c9ad5` — and it
+can be pulled out of any eNSP install (it lives at `dev/upload/agentd` inside
+the device image).
 
 `agentd-protocol.md` documents the four channels the guest uses to talk to
 the host, the byte layouts, the state machine, and the two traps that cost

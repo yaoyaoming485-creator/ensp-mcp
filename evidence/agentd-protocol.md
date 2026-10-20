@@ -17,10 +17,23 @@ real symbol names. Ghidra was not usable on this host (no install, and the
 Windows build rejects ELF), so the analysis was done with `objdump` plus a
 small ELF section reader for resolving string addresses.
 
+> **The binary itself is not redistributed here.** `agentd` is a vendor file
+> from the eNSP device image, so it is deliberately not committed (see
+> `.gitignore`). The hash above identifies it exactly, and it can be pulled
+> straight out of any eNSP install:
+>
+> ```bash
+> # Linux / WSL
+> sha256sum /mnt/sda1/dev/upload/agentd
+> # on the guest, or from a mounted device image
+> ```
+>
+> The device image is a VirtualBox disk; mount its partition and the file is
+> at `dev/upload/agentd`.
+
 ---
 
 ## 1. The four channels
-
 ```
         HOST                                                GUEST
   ┌──────────────┐                                ┌──────────────────┐

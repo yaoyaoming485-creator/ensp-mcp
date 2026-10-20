@@ -384,9 +384,10 @@ conformance is not the same as the consumer accepting the output.
 All measurements were taken on a real installation.
 
 * [`evidence/agentd-protocol.md`](evidence/agentd-protocol.md) — the guest
-  agent's four channels, recovered by disassembling
-  [`evidence/agentd.elf`](evidence/agentd.elf) and confirmed against a live
-  guest.
+  agent's four channels, recovered by disassembling the guest's `agentd`
+  binary and confirmed against a live guest. (The binary itself is a vendor
+  file from the eNSP image and is not redistributed; the notes give its
+  SHA-256 and where to extract it.)
 * [`evidence/boot_capture.log`](evidence/boot_capture.log), produced by
   [`evidence/capture_boot.py`](evidence/capture_boot.py) — the serial pipe
   captured from the moment the VM is powered on.

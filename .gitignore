@@ -16,3 +16,7 @@ tests/out/
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Vendor binary from the eNSP device image - not redistributed.
+# See evidence/agentd-protocol.md for the SHA-256 and how to extract it.
+evidence/*.elf
