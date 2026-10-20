@@ -278,6 +278,41 @@ python scripts/vrp_cli.py --guest 192.168.56.101 display version
 interface sockets point at an address the guest actually owns — without it
 VRP exits with `VPORT_Hal_PortEnable failed!`.
 
+### A worked example
+
+```console
+$ python scripts/vrp_cli.py --list
+192.168.56.2
+192.168.56.3
+192.168.56.4
+192.168.56.5
+192.168.56.101
+
+$ python scripts/vrp_cli.py --guest 192.168.56.101 'display version' 'display clock'
+=== display version
+display version
+
+Huawei Versatile Routing Platform Software
+
+VRP (R) software, Version 5.130 (AR200 V200R003C00)
+
+Copyright (C) 2011-2012 HUAWEI TECH CO., LTD
+
+Huawei AR201 Router uptime is 0 week, 0 day, 0 hour, 1 minute
+...
+<Huawei>
+=== display clock
+display clock
+
+2026-10-20 20:51:22
+
+Tuesday
+
+Time Zone(China-Standard-Time) : UTC-08:00
+
+<Huawei>
+```
+
 ## Verification
 
 Two suites, both green:
