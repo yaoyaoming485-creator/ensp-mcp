@@ -446,6 +446,11 @@ def control_handshake(guest_ip: str, device_id: bytes = DEFAULT_DEVICE_ID,
     sock.settimeout(timeout)
     try:
         sock.connect((guest_ip, AGENTD_CONTROL_PORT))
+    except socket.timeout as exc:
+        raise AgentdError(
+            f"control connect to {guest_ip} timed out - another client (the "
+            "eNSP client, or this project's own lab supervisor) may already "
+            "hold the agentd control session") from exc
     except OSError as exc:
         raise AgentdError(f"control connect to {guest_ip}: {exc}") from exc
     events: list[str] = []

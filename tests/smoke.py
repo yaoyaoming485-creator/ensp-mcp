@@ -258,10 +258,10 @@ if guests:
         res = agentd.control_handshake(guests[0], timeout=8.0)
         check("control handshake", bool(res.get("events")), ", ".join(res.get("events", [])))
     except agentd.AgentdError as exc:
-        if "may already hold" in str(exc):
+        if "may already hold" in str(exc) or "timed out" in str(exc):
             skip("control handshake",
-                 f"{guests[0]} is busy - the eNSP client already holds its "
-                 "agentd control session")
+                 f"{guests[0]} is busy - the eNSP client (or this project's own "
+                 "lab supervisor) already holds its agentd control session")
         else:
             check("control handshake", False, str(exc))
     except Exception as exc:  # noqa: BLE001

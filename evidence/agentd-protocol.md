@@ -241,13 +241,45 @@ Huawei AR201 Router uptime is 0 week, 0 day, 0 hour, 1 minute
 
 ## 5. Reproduction
 
+The whole protocol is driven by `enspctl`, which brings a topology up without
+the eNSP application:
+
 ```bash
-# 1. host-side pipe server + media server + control client
-python scripts/host_side.py            # see src/ensp_mcp/agentd.py
+# 1. build a topology
+enspctl topo create --spec spec.json -o lab.topo
 
-# 2. boot the guest
+# 2. create the lab: one VirtualBox machine per device, cloned from
+#    eNSP's AR_Base, with the UART in client mode and resource.cfg rewritten
+enspctl lab create demo --topo lab.topo --root ./demo --with-vms
+
+# 3. bring it up (the drivers keep running in a background supervisor,
+#    because the guests power off as soon as the control socket closes)
+enspctl lab up --root ./demo
+
+# 4. talk to the router
+enspctl run R1 "display version" --root ./demo
+
+# 5. stop it
+enspctl lab down --root ./demo
+```
+
+The pieces behind `enspctl` are in `src/ensp_mcp/`:
+
+| Module | Role |
+| --- | --- |
+| `agentd.py` | the protocol itself: handshake builder, pipe server, media server, VRP console |
+| `host.py` | drives one guest: pipe + media + control threads |
+| `lab.py` | the lab: machines, addresses, pipes, `resource.cfg` |
+| `rescfg.py` | offline rewrite of `resource.cfg` inside a disk image |
+| `supervise.py` | detached supervisor that keeps the control connections alive |
+| `cli.py` | the `enspctl` command line |
+
+A single device can also be driven by hand:
+
+```bash
+# host-side pipe server + media server + control client for one device
+python scripts/host_side.py --pipe '\\.\pipe\MYR2-COM2' --guest-ip 192.168.56.101
 VBoxManage startvm MYR2 --type headless
-
-# 3. talk to the router
 python scripts/vrp_cli.py --guest 192.168.56.101 display version
 ```
+

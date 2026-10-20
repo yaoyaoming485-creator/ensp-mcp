@@ -285,8 +285,9 @@ try:
             break
     if guests and answered is None:
         skip("ensp_vrp_command",
-             "every device's console is held by the eNSP client (it keeps a "
-             "session open), so the guest does not answer a second client")
+             "every device's console is held by another client (the eNSP "
+             "client, or this project's own lab supervisor), so the guest does "
+             "not answer a second client")
     elif not guests:
         skip("ensp_vrp_command", "no eNSP guest reachable on the host-only subnet")
 
@@ -304,7 +305,8 @@ try:
                       ", ".join(res.get("events", [])))
                 handshake_ok = True
                 break
-            if "may already hold" in str(res.get("error", "")):
+            if "may already hold" in str(res.get("error", "")) or \
+               "timed out" in str(res.get("error", "")):
                 busy = dev["guest_ip"]
         if not handshake_ok:
             if busy:

@@ -34,6 +34,9 @@ It also supersedes the negative result below: the serial pipe *is* worth
 reading — it carries the configuration handshake — but it is **not** where the
 router's CLI lives.
 
+The protocol is implemented in `src/ensp_mcp/agentd.py` and driven from the
+command line by `enspctl` (see `lab.py`, `host.py`, `supervise.py`):
+
 ## `capture_boot.py` + `boot_capture.log`
 
 The decisive experiment for the *screen* question. The script powers the VM
