@@ -1,7 +1,7 @@
 [project]
 name = "ensp-mcp"
-version = "0.1.0"
-description = "MCP server for Huawei eNSP: topology authoring plus device console access over the VirtualBox virtual screen"
+version = "1.0.0"
+description = "MCP server and CLI for Huawei eNSP: topology authoring, lab management and real VRP console access"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -9,6 +9,7 @@ dependencies = ["mcp>=2.3.0"]
 
 [project.scripts]
 ensp-mcp = "ensp_mcp.server:main"
+enspctl = "ensp_mcp.cli:main"
 
 [build-system]
 requires = ["hatchling"]

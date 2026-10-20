@@ -162,8 +162,94 @@ VPORT_Hal_PortEnable failed! u32Ret = -1
 
 ```bash
 uv sync
-uv run ensp-mcp
+uv run ensp-mcp          # MCP 服务器
+uv run enspctl --help    # 命令行
 ```
+
+## `enspctl` —— 用命令行控制 eNSP
+
+MCP 服务器是给 Agent 用的。`enspctl` 是同样东西的命令行版本：写拓扑、
+把整个拓扑拉起成一个 **lab**（每台设备一台 VirtualBox 虚拟机，从 eNSP 自己的
+设备镜像克隆），以及和路由器对话。
+
+```console
+$ enspctl topo create --spec spec.json -o lab.topo
+wrote lab.topo (1767 bytes, utf-8)
+  2 devices, 1 links, loads_in_ensp=True
+
+$ enspctl lab create demo --topo lab.topo --root ./demo --with-vms
+lab 'demo' created in ./demo
+  R1         model=AR2220     vm=demo-R1   ip=192.168.56.101   pipe=\\.\pipe\enspctl-demo-R1
+  R2         model=AR2220     vm=demo-R2   ip=192.168.56.102   pipe=\\.\pipe\enspctl-demo-R2
+  demo-R1: cloning from AR_Base ...
+  demo-R2: cloning from AR_Base ...
+
+$ enspctl lab up --root ./demo
+patching resource.cfg ...
+  R1: 9 socket line(s) -> local 192.168.56.101, dest 192.168.56.1
+  R2: 9 socket line(s) -> local 192.168.56.102, dest 192.168.56.1
+preparing the guest agent drivers ...
+starting machines ...
+  demo-R1: starting
+  demo-R2: starting
+R1: control: <- boot
+R1: control: -> 1 (go)
+R1: control: <- prepare OK
+R1: control: <- DEV0 started
+...
+  R1  started
+  R2  started
+lab is up; press Ctrl-C to stop the drivers
+
+$ enspctl run R1 "display version" --root ./demo
+=== display version
+Huawei Versatile Routing Platform Software
+VRP (R) software, Version 5.130 (AR200 V200R003C00)
+...
+
+$ enspctl lab status --root ./demo
+lab demo  (./demo)
+device     vm                    ip               state      agentd vrp
+R1         demo-R1               192.168.56.101   running    yes    yes
+R2         demo-R2               192.168.56.102   running    yes    yes
+
+$ enspctl lab down --root ./demo
+```
+
+### 命令一览
+
+| 命令 | 作用 |
+| --- | --- |
+| `enspctl topo create --spec s.json -o x.topo` | 从 JSON spec 生成拓扑 |
+| `enspctl topo read x.topo` | 解析拓扑为 JSON |
+| `enspctl topo validate --spec s.json` | 校验 spec |
+| `enspctl lab create NAME --topo x.topo --root DIR` | 建 lab（加 `--with-vms` 克隆虚拟机） |
+| `enspctl lab up --root DIR` | 改写配置、启动并驱动整个 lab |
+| `enspctl lab down --root DIR` | 关闭设备 |
+| `enspctl lab status --root DIR` | 查看设备状态与是否应答 |
+| `enspctl lab patch --root DIR` | 改写每台设备的 `resource.cfg` |
+| `enspctl lab destroy --root DIR` | 关闭并删除虚拟机 |
+| `enspctl dev list` | 列出 host-only 网段上所有 eNSP 客机 |
+| `enspctl dev exec R1 "display version"` | 执行 VRP 命令，返回精确文本 |
+| `enspctl dev shell R1` | 交互式 VRP 会话 |
+| `enspctl run R1 "display version"` | `dev exec` 的简写 |
+
+### 一个 lab 做了什么
+
+lab 拥有一个目录：拓扑、每台设备一台 VirtualBox 虚拟机、以及一份清单。对每台设备它会：
+
+* 克隆 eNSP 自己的 `AR_Base` 机器，所以客机是真的 eNSP 设备
+  （差异盘里带着 `/dev/upload`：`agentd`、`resource.cfg`、VRP 二进制）；
+* 把它挂到 host-only 网段，并分配一个空闲地址；
+* 把它的 COM2 串口设成 **client 模式**，让 VirtualBox 来连 lab 自己起的管道服务
+  —— VirtualBox 自建的管道只给宿主读权限；
+* 改写 `resource.cfg`，让 VRP 的接口 socket 指向 lab 实际下发的地址 ——
+  不改的话 VRP 会以 `VPORT_Hal_PortEnable failed!` 挂掉。
+
+然后 `lab up` 就像 eNSP 客户端那样驱动每个客机：串口握手、控制帧、media server。
+
+> lab 的虚拟机**不是** eNSP 应用管理的那批，也不会出现在 eNSP 画布上。
+> `enspctl` 是通往同一批设备的另一条、可脚本化的路径。
 
 ### 用项目自己的 venv 启动，不要用 `uvx`
 

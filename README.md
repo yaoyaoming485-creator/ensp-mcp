@@ -173,8 +173,100 @@ runtime tools.
 
 ```bash
 uv sync
-uv run ensp-mcp
+uv run ensp-mcp          # the MCP server
+uv run enspctl --help    # the command line
 ```
+
+## `enspctl` — drive eNSP from the command line
+
+The MCP server is for agents. `enspctl` is the same thing for your shell: it
+authors topologies, brings a whole topology up as a **lab** (one VirtualBox
+machine per device, cloned from eNSP's own device image), and talks to the
+routers.
+
+```console
+$ enspctl topo create --spec spec.json -o lab.topo
+wrote lab.topo (1767 bytes, utf-8)
+  2 devices, 1 links, loads_in_ensp=True
+
+$ enspctl lab create demo --topo lab.topo --root ./demo --with-vms
+lab 'demo' created in ./demo
+  R1         model=AR2220     vm=demo-R1   ip=192.168.56.101   pipe=\\.\pipe\enspctl-demo-R1
+  R2         model=AR2220     vm=demo-R2   ip=192.168.56.102   pipe=\\.\pipe\enspctl-demo-R2
+  demo-R1: cloning from AR_Base ...
+  demo-R2: cloning from AR_Base ...
+
+$ enspctl lab up --root ./demo
+patching resource.cfg ...
+  R1: 9 socket line(s) -> local 192.168.56.101, dest 192.168.56.1
+  R2: 9 socket line(s) -> local 192.168.56.102, dest 192.168.56.1
+preparing the guest agent drivers ...
+starting machines ...
+  demo-R1: starting
+  demo-R2: starting
+R1: control: <- boot
+R1: control: -> 1 (go)
+R1: control: <- prepare OK
+R1: control: <- DEV0 started
+...
+  R1  started
+  R2  started
+lab is up; press Ctrl-C to stop the drivers
+
+$ enspctl run R1 "display version" --root ./demo
+=== display version
+Huawei Versatile Routing Platform Software
+VRP (R) software, Version 5.130 (AR200 V200R003C00)
+...
+
+$ enspctl lab status --root ./demo
+lab demo  (./demo)
+device     vm                    ip               state      agentd vrp
+R1         demo-R1               192.168.56.101   running    yes    yes
+R2         demo-R2               192.168.56.102   running    yes    yes
+
+$ enspctl lab down --root ./demo
+```
+
+### Commands
+
+| Command | Purpose |
+| --- | --- |
+| `enspctl topo create --spec s.json -o x.topo` | build a topology from a JSON spec |
+| `enspctl topo read x.topo` | parse a topology into JSON |
+| `enspctl topo validate --spec s.json` | check a spec |
+| `enspctl lab create NAME --topo x.topo --root DIR` | create a lab (add `--with-vms` to clone the machines) |
+| `enspctl lab up --root DIR` | patch, start and drive the whole lab |
+| `enspctl lab down --root DIR` | stop the machines |
+| `enspctl lab status --root DIR` | show the devices and whether they answer |
+| `enspctl lab patch --root DIR` | rewrite each device's `resource.cfg` |
+| `enspctl lab destroy --root DIR` | stop and remove the machines |
+| `enspctl dev list` | every eNSP guest on the host-only subnet |
+| `enspctl dev exec R1 "display version"` | run VRP commands, get the exact text |
+| `enspctl dev shell R1` | interactive VRP session |
+| `enspctl run R1 "display version"` | shorthand for `dev exec` |
+
+### What a lab does
+
+A lab owns a directory with the topology, one VirtualBox machine per device
+and a manifest. For every device it:
+
+* clones eNSP's own `AR_Base` machine, so the guest really is an eNSP device
+  (the difference disk carries `/dev/upload`: `agentd`, `resource.cfg`, the VRP
+  binaries);
+* puts it on the host-only segment and assigns it a free address;
+* puts its COM2 UART in **client** mode, so VirtualBox dials a pipe server the
+  lab runs — a pipe VirtualBox creates itself only grants the host read access;
+* rewrites `resource.cfg` so VRP's interface sockets point at the addresses
+  the lab handed out — otherwise VRP exits with
+  `VPORT_Hal_PortEnable failed!`.
+
+`lab up` then drives every guest the way the eNSP client would: the serial
+handshake, the control frames, and the media server.
+
+> The lab's machines are **not** the ones the eNSP application manages, and
+> they do not appear in the eNSP canvas. `enspctl` is a parallel, scriptable
+> path to the same devices.
 
 ### Launch it from the project's own venv, not from `uvx`
 
