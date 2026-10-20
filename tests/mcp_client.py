@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import queue
+import socket
 import subprocess
 import sys
 import threading
@@ -254,6 +255,25 @@ try:
     for dev in guests:
         if not dev.get("vrp_console"):
             continue
+        # probe first: a device whose console the eNSP client already holds
+        # accepts the connection but never sends anything, and waiting for the
+        # full connect-retry budget for each such device would be slow
+        probe_sock = socket.socket()
+        probe_sock.settimeout(1.0)
+        try:
+            probe_sock.connect((dev["guest_ip"], 40000))
+            probe_sock.sendall(b"\r\n")
+            probe_sock.settimeout(1.5)
+            try:
+                probe = probe_sock.recv(256)
+            except socket.timeout:
+                probe = b""
+        except OSError:
+            probe = b""
+        finally:
+            probe_sock.close()
+        if not probe:
+            continue
         blocks = call(srv, "ensp_vrp_command",
                       {"guest_ip": dev["guest_ip"], "commands": ["display version"],
                        "wait": 2.0})
@@ -277,7 +297,7 @@ try:
         busy = None
         for dev in guests:
             blocks = call(srv, "ensp_vrp_agent_handshake",
-                          {"guest_ip": dev["guest_ip"]})
+                          {"guest_ip": dev["guest_ip"], "timeout": 6.0})
             res = json.loads(text_of(blocks))
             if res.get("ok"):
                 check("ensp_vrp_agent_handshake", bool(res.get("events")),

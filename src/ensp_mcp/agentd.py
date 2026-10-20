@@ -269,8 +269,8 @@ class VrpConsole:
     """
 
     def __init__(self, guest_ip: str, port: int = VRP_CONSOLE_PORT,
-                 timeout: float = 10.0, connect_retries: int = 8,
-                 retry_delay: float = 2.0):
+                 timeout: float = 5.0, connect_retries: int = 4,
+                 retry_delay: float = 1.5):
         self.guest_ip = guest_ip
         self.port = port
         self.timeout = timeout
@@ -284,7 +284,8 @@ class VrpConsole:
 
         The VRP console service accepts one client at a time.  Right after a
         session ends the guest keeps the port in TIME_WAIT for a few seconds,
-        so a single connect attempt is not enough.
+        so a single connect attempt is not enough.  The retry budget is kept
+        small on purpose: a device that is genuinely down should fail fast.
         """
         last: OSError | None = None
         for attempt in range(1, self.connect_retries + 1):

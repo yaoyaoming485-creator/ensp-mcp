@@ -1,14 +1,15 @@
 # ensp-mcp
 
 An MCP server for Huawei **eNSP** (Enterprise Network Simulation Platform).
-It gives an agent two things eNSP does not expose on its own: the ability to
-**author topologies as files**, and the ability to **read and drive any running
-device's console**.
+It gives an agent three things eNSP does not expose on its own: the ability to
+**author topologies as files**, the ability to **read and drive any running
+device's console**, and the ability to **talk to the router itself** and get
+its exact output as text.
 
 Everything here was reverse-engineered against a real install — eNSP
 `V1.3.00.100` with Oracle VirtualBox `7.2.18` on Windows 11. No eNSP SDK, no
-undocumented DLL calls, no GUI automation: just the `.topo` format and the
-VirtualBox control interface eNSP already drives.
+undocumented DLL calls, no GUI automation: just the `.topo` format, the guest
+agent's wire protocol, and the VirtualBox control interface eNSP already drives.
 
 ## What was reverse-engineered
 
@@ -328,12 +329,14 @@ conformance is not the same as the consumer accepting the output.
 
 ## Known limitations
 
-* **No text extraction.** The console is a bitmap; getting characters back needs
-  OCR, which this server deliberately does not do. Tools return the image, and
-  MCP clients can read images directly.
-* **Line echo pacing.** VRP echoes every character; very long lines are chunked,
-  but a fast paste into a slow emulated UART can still drop characters. Use
-  `ensp_console_send_lines` (it paces) rather than one huge `ensp_console_type`.
+* **The screen tools still have the old limitations.** `ensp_console_screen` is
+  a bitmap and `ensp_console_type` types into the guest's Linux console, so
+  they drop characters and give no text back. Use `ensp_vrp_command` instead —
+  it returns exact text.
+* **The VRP console serves one client at a time.** When the eNSP client is
+  driving a device it holds that device's console session, and a second
+  client connects but receives nothing. The tools report that rather than
+  hanging.
 * **Devices whose images are absent.** `NE40E`, `NE5000E`, `NE9000`, `CE6800`,
   `CE12800`, `CX` and `USG6000V` need an external image that the eNSP installer
   does not ship (`CE.img`, `NE40E.img`, `vfw_usg.vdi`…). Topologies using them
@@ -343,10 +346,15 @@ conformance is not the same as the consumer accepting the output.
 
 ## Provenance
 
-All measurements were taken on a real installation. The console finding is
-backed by [`evidence/boot_capture.log`](evidence/boot_capture.log), produced by
-[`evidence/capture_boot.py`](evidence/capture_boot.py), which captures the serial
-pipe from the moment the VM is powered on. Console screenshots taken along the
-way are in [`evidence/`](evidence/).
+All measurements were taken on a real installation.
+
+* [`evidence/agentd-protocol.md`](evidence/agentd-protocol.md) — the guest
+  agent's four channels, recovered by disassembling
+  [`evidence/agentd.elf`](evidence/agentd.elf) and confirmed against a live
+  guest.
+* [`evidence/boot_capture.log`](evidence/boot_capture.log), produced by
+  [`evidence/capture_boot.py`](evidence/capture_boot.py) — the serial pipe
+  captured from the moment the VM is powered on.
+* [`evidence/console-*.png`](evidence/) — the guest's virtual screen.
 
 MIT.
