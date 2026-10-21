@@ -191,7 +191,7 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
         opts = HostOptions(
             guest_ip=d.ip, pipe_path=d.pipe, media_port=d.media_port,
             host_ip=lab.host_ip, device_id=d.device_id.encode("latin-1"),
-            verbose=verbose,
+            verbose=verbose, peers=lab.peers(d),
         )
         devs.append(HostDevice(opts=opts, log_prefix=f"{d.name}: ")
                     .start(wait_ready=False))
