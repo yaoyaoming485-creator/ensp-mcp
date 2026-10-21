@@ -86,36 +86,63 @@ def cmd_lab_patch(args) -> int:
     lab = labmod.Lab.load(args.root)
     print("patching resource.cfg ...")
     total = 0
+    failed: list[str] = []
     for d in lab.devices:
         vdi = lab.device_disk(d)
         if vdi is None:
             print(f"  {d.name}: no disk found, skipped")
+            failed.append(d.name)
+            continue
+        if not lab.needs_patch(d, vdi):
+            print(f"  {d.name}: already patched -> local {d.ip}, "
+                  f"dest {lab.host_ip} ({vdi.name})")
             continue
         try:
             n = rescfg.rewrite_vdi(vdi, d.ip, lab.host_ip, vm_name=d.vm)
-            total += n
-            print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, dest {lab.host_ip}")
         except rescfg.ResourceCfgError as exc:
             print(f"  {d.name}: FAILED {exc}")
+            failed.append(d.name)
+            continue
+        total += n
+        lab.mark_patched(d, lab.device_disk(d) or vdi)
+        print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, dest {lab.host_ip}")
     print(f"patched {total} socket line(s)")
+    if failed:
+        # A guest whose resource.cfg still points at the old addresses cannot
+        # bind its sockets: VRP dies with "VPORT_Hal_PortEnable failed!".
+        # That has to be an error, not a warning.
+        print("error: could not patch " + ", ".join(failed)
+              + " - without it the guest cannot bind its sockets", file=sys.stderr)
+        return 1
     return 0
 
 
 def cmd_lab_up(args) -> int:
     lab = labmod.Lab.load(args.root)
-    if args.with_vms:
-        lab.create_vms()
-    if args.patch:
-        cmd_lab_patch(argparse.Namespace(root=args.root))
 
     from . import supervise
     if args.foreground:
+        if args.with_vms:
+            lab.create_vms()
+        if args.patch:
+            cmd_lab_patch(argparse.Namespace(root=args.root))
         return supervise.run_foreground(Path(args.root), verbose=not args.quiet)
 
     # The guests power themselves off when the control socket closes, so the
     # drivers must outlive this command: they run in a detached supervisor.
+    # The old supervisor has to go *first*: while it is alive it holds the
+    # named pipes and the disk images, and patching a locked disk fails with
+    # VBOX_E_INVALID_OBJECT_STATE.
+    print("stopping any previous supervisor ...")
+    supervise.stop(args.root)
+    if args.with_vms:
+        lab.create_vms()
+    if args.patch:
+        rc = cmd_lab_patch(argparse.Namespace(root=args.root))
+        if rc != 0:
+            print("aborting: the guest images could not be patched", file=sys.stderr)
+            return rc
     print("starting the lab supervisor ...")
-    supervise.stop(args.root)          # a stale one would hold the pipes
     supervise.spawn(args.root, verbose=not args.quiet)
     print("waiting for the devices ...")
     ready, _ = supervise.wait_until_up(Path(args.root), deadline_seconds=300)
@@ -251,8 +278,10 @@ def cmd_dev_shell(args) -> int:
                 break
             if not line:
                 continue
-            con.send(line + "\r\n")
-            sys.stdout.write(con._drain_until_prompt(15.0))
+            try:
+                sys.stdout.write(con.exec_one(line, wait=15.0))
+            except agentd.VrpConsoleError as exc:
+                print(f"error: {exc}", file=sys.stderr)
             sys.stdout.flush()
     return 0
 
@@ -315,6 +344,9 @@ def build_parser() -> argparse.ArgumentParser:
     lu.add_argument("--quiet", action="store_true")
     lu.add_argument("--patch", action="store_true", default=True,
                     help="rewrite each device's resource.cfg first (default)")
+    lu.add_argument("--no-patch", dest="patch", action="store_false",
+                    help="skip the resource.cfg rewrite (the images are already "
+                         "patched, and rewriting them is expensive)")
     lu.set_defaults(func=cmd_lab_up)
 
     lp = l.add_parser("patch", help="rewrite each device's resource.cfg")

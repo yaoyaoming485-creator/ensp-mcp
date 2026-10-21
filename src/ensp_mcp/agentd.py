@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import re
 import socket
 import struct
 import time
@@ -259,14 +260,61 @@ def _frames(conn: socket.socket, count: int, timeout: float) -> list[bytes]:
 
 # ------------------------------------------------------------------ console --
 
+# A VRP prompt is the device name in angle brackets (user view) or in square
+# brackets (system view), alone on its line.
+_PROMPT_RE = re.compile(r"^(?:<[^>]*>|\[[^\]]*\])\s*$")
+
+# The banner a freshly booted device shows on its console.  It wants a key
+# press before it accepts any command.
+_PRESS_ANY_KEY = "press any key to get started"
+
+
+def _is_prompt(line: str) -> bool:
+    """Is ``line`` a VRP prompt?"""
+    return bool(_PROMPT_RE.match(line.strip()))
+
+
+def _echo_seen(text: str, out: str) -> bool:
+    """Did the console echo ``text`` back?
+
+    VRP echoes what was typed, but a long command can be wrapped over several
+    lines, so the comparison ignores whitespace.
+    """
+    if not text:
+        return True
+    return re.sub(r"\s+", "", text) in re.sub(r"\s+", "", out)
+
+
+def _bare_prompt(out: str) -> bool:
+    """Is ``out`` nothing but a prompt?
+
+    That is what a console shows when it swallowed the command: the banner
+    was dismissed, the prompt is back, and nothing was executed.
+    """
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    if not lines:
+        return True
+    return len(lines) == 1 and _is_prompt(lines[0])
+
+
 class VrpConsole:
     """Plain-text VRP console over the guest's TCP 40000.
 
     The service accepts a single client at a time, so keep one connection open
-    and issue every command over it.  A fresh session needs one throw-away
-    newline: the first keystroke can otherwise be swallowed while VRP is still
-    printing its banner.
+    and issue every command over it.
+
+    A device that has just booted answers with ``Press any key to get
+    started``.  One throw-away newline is *not* enough to get past it: if that
+    newline arrives before VRP reaches the banner, it is swallowed, and the
+    next line - the first real command - is then consumed as the key press.
+    The command never runs, and the console hands back the banner as if it
+    were the result.  :meth:`wake` therefore keeps watching the banner until
+    the device really sits at a prompt, and :meth:`run` verifies that every
+    command was echoed back before it reports success.
     """
+
+    #: lower bound for the "wait until the prompt comes back" window
+    min_prompt_wait: float = 6.0
 
     def __init__(self, guest_ip: str, port: int = VRP_CONSOLE_PORT,
                  timeout: float = 5.0, connect_retries: int = 4,
@@ -278,6 +326,7 @@ class VrpConsole:
         self.retry_delay = retry_delay
         self.sock: socket.socket | None = None
         self.banner = ""
+        self._ready = False
 
     def connect(self) -> "VrpConsole":
         """Open the console, retrying while the previous session is released.
@@ -300,15 +349,10 @@ class VrpConsole:
                     time.sleep(self.retry_delay)
                 continue
             self.sock = s
-            time.sleep(0.4)
-            # drain the banner
-            self.banner = self._drain(0.8)
-            # wake the session: VRP may still be at the "press any key" prompt
-            try:
-                self.sock.sendall(b"\r\n")
-            except OSError:
-                pass
-            self._drain(0.6)
+            self._ready = False
+            time.sleep(0.3)
+            # get past the "press any key" banner and wait for a real prompt
+            self.banner = self.wake()
             return self
         raise VrpConsoleError(
             f"cannot reach VRP console at {self.guest_ip}:{self.port} "
@@ -354,6 +398,47 @@ class VrpConsole:
         self.send(cmd.rstrip("\r\n") + "\r\n")
         return self._drain(wait)
 
+    def wake(self, seconds: float = 12.0) -> str:
+        """Bring the session to a real VRP prompt and return what was read.
+
+        A device that has just booted shows ``Press any key to get started``
+        and swallows the first line it receives.  Sending a single key and
+        moving on is a race: when the key arrives before VRP reaches the
+        banner it is lost, and the caller's first command is then eaten as
+        the key press.  So the banner is watched until it is gone *and* a
+        prompt shows up, and the key is pressed again if it is still there.
+        """
+        if self.sock is None:
+            raise VrpConsoleError("console not connected")
+        out = self._drain(0.5)
+        tail = out
+        end = time.time() + seconds
+        presses = 0
+        while time.time() < end:
+            if _PRESS_ANY_KEY in tail.lower():
+                if presses >= 3:
+                    break
+                presses += 1
+                try:
+                    self.sock.sendall(b"\r\n")
+                except OSError:
+                    pass
+                tail = self._drain(1.2)
+                out += tail
+                continue
+            lines = [ln for ln in tail.splitlines() if ln.strip()]
+            if lines and _is_prompt(lines[-1]):
+                self._ready = True
+                break
+            tail = self._drain(0.4)
+            out += tail
+        return out
+
+    def ensure_ready(self) -> None:
+        """Make sure the console is past the banner before sending a command."""
+        if not self._ready:
+            self.wake()
+
     def _drain_until_prompt(self, seconds: float) -> str:
         """Read until the VRP prompt reappears, or the window expires.
 
@@ -367,8 +452,44 @@ class VrpConsole:
             out += self._drain(0.3)
             # the prompt is the last non-empty line we have seen
             lines = [ln for ln in out.splitlines() if ln.strip()]
-            if lines and lines[-1].strip().endswith("]"):
+            if lines and _is_prompt(lines[-1]):
                 break
+        return out
+
+    def _execute(self, cmd: str, wait: float, until_prompt: bool) -> str:
+        text = cmd.rstrip("\r\n")
+        self.send(text + "\r\n")
+        if until_prompt:
+            return self._drain_until_prompt(max(wait, self.min_prompt_wait))
+        return self._drain(wait)
+
+    def exec_one(self, cmd: str, wait: float = 1.5, until_prompt: bool = True) -> str:
+        """Run one command, prove that it ran, and return its output.
+
+        VRP echoes every command it receives, so the echo is used as proof
+        that the command really reached the CLI.  A command that was swallowed
+        by the boot banner is retried once after waking the console; if it
+        still does not come back, the call fails loudly instead of handing
+        the banner to the caller as if it were the output.
+        """
+        self.ensure_ready()
+        text = cmd.rstrip("\r\n")
+        out = self._execute(cmd, wait, until_prompt)
+        if not _echo_seen(text, out):
+            if _PRESS_ANY_KEY in out.lower() or _bare_prompt(out):
+                # The command never reached the CLI - it was eaten by the
+                # "press any key" banner, or the session is not accepting
+                # input at all.  Wake the console and try exactly once, so a
+                # command is never executed twice.
+                self._ready = False
+                self.wake()
+                out = self._execute(cmd, wait, until_prompt)
+            if not _echo_seen(text, out):
+                raise VrpConsoleError(
+                    f"command {cmd!r} was not executed by {self.guest_ip} "
+                    f"(the console did not echo it); the device is not accepting "
+                    f"input on {self.guest_ip}:{self.port}"
+                )
         return out
 
     def run(self, commands: list[str], wait: float = 1.5,
@@ -381,11 +502,7 @@ class VrpConsole:
         chunks = []
         for cmd in commands:
             chunks.append(f"=== {cmd}\n")
-            self.send(cmd.rstrip("\r\n") + "\r\n")
-            if until_prompt:
-                chunks.append(self._drain_until_prompt(max(wait, 6.0)))
-            else:
-                chunks.append(self._drain(wait))
+            chunks.append(self.exec_one(cmd, wait=wait, until_prompt=until_prompt))
         return "".join(chunks)
 
 

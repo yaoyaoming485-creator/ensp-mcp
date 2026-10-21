@@ -88,10 +88,20 @@ NULL0                       up    up(s)       0%     0%          0          0
 顺带把「截屏读字」那套做法固有的两个问题一起消掉了：掉字符，以及
 `---- More ----` 分页器把后续输入吞掉。
 
+**读取策略：只走文本。** 设备状态只从这个 socket 读，屏幕一律不截、也绝不作为
+兜底：连不上控制台、或命令没有真正执行，调用必须**显式失败**（非零退出码 /
+`ok: false`），而不是返回一张图或一段开机 banner。设备刚启动时会回
+`Press any key to get started`，只敲一次回车**不一定**能过去 —— 要是这一次按键
+在设备还没进入该提示时就到了，它会被吞掉，紧接着的第一条命令就被当成
+「按任意键」吃掉了。所以客户端会一直等到拿到真正的提示符，并逐条校验命令
+**有回显**，确认执行了才报成功。
+
 VirtualBox 虚拟屏是**另一回事**：对 AR 设备来说它显示的是 **Tiny Core Linux
 guest**（`Core Linux`，内核 `3.0.21-tinycore`，主机名 `box`）停在登录提示符，
 因为路由器是以另一个进程跑在同一台机器上的。所以 `ensp_console_screen`
-返回的是 Linux 屏。屏幕类工具保留着，但**要跟路由器说话请用 `ensp_vrp_command`**。
+返回的是 Linux 屏。屏幕类工具保留着，但只作**启动诊断**用
+（「这台设备起来了吗？」），**不作为读取设备状态的手段**；
+要跟路由器说话请用 `ensp_vrp_command`。
 
 ### 3. guest agent 与宿主怎么通信
 
@@ -305,7 +315,7 @@ DSH 的 MCP 配置片段：
 | `ensp_vrp_command` | 执行 VRP 命令，返回路由器的**精确文本** |
 | `ensp_vrp_agent_handshake` | 跑一遍 agentd 控制握手，回报设备说了什么 |
 
-**控制台（VirtualBox 虚拟屏）**
+**控制台（VirtualBox 虚拟屏 —— 仅诊断用）**
 
 | 工具 | 作用 |
 | --- | --- |
@@ -314,8 +324,10 @@ DSH 的 MCP 配置片段：
 | `ensp_console_key` | 发具名按键（`ctrl-z`、方向键、`F1`…） |
 | `ensp_console_send_lines` | 逐行发送一段配置 |
 
-凡是要跟路由器说话，都用 `ensp_vrp_command`：它给文本、不掉字符、
-也不受分页器影响。屏幕类工具驱动的是 guest 的 Linux 控制台。
+这几个工具驱动的是 **guest 的 Linux 控制台**，不是路由器本身；它们只用来回答
+「设备起来了吗？」，**不作为读取设备状态的手段**：屏幕是位图，本项目不对它做
+OCR。凡是要跟路由器说话，都用 `ensp_vrp_command`：它给文本、不掉字符、
+也不受分页器影响。
 
 ```jsonc
 // ensp_vrp_command(guest_ip="192.168.56.101", commands=["display version"])
@@ -383,6 +395,7 @@ Time Zone(China-Standard-Time) : UTC-08:00
 | 套件 | 覆盖内容 |
 | --- | --- |
 | `tests/smoke.py` | 模块级：型号目录、`.topo` 构建/写/读往返、校验失败路径、解析真实 eNSP 拓扑、VirtualBox 盘点、截屏、键盘注入、**真实 VRP 控制台、agentd 控制握手** |
+| `tests/test_console_text.py` | 文本控制台：开机 banner 不能把命令吞掉、没执行的命令必须显式失败、文本通道绝不能碰屏幕代码 |
 | `tests/mcp_client.py` | 按 JSON-RPC stdio 驱动服务器：像 Agent 一样 `initialize`、`tools/list`，然后**逐个调用全部 14 个工具**并检查结果 |
 
 `mcp_client.py` 是真正的验收测试 —— 它断言服务器公布了全部 14 个工具，
@@ -394,9 +407,10 @@ Time Zone(China-Standard-Time) : UTC-08:00
 
 ## 已知限制
 
-* **屏幕类工具仍有老问题。** `ensp_console_screen` 是位图，
+* **屏幕类工具仅供诊断。** `ensp_console_screen` 是 guest 的 Linux 屏位图，
   `ensp_console_type` 是往 guest 的 Linux 控制台里打字，所以照样掉字符、
-  照样拿不到文本。请改用 `ensp_vrp_command`。
+  照样拿不到文本；它们**不会**被用来读取设备状态，也**不会**在文本通道失败时
+  兜底。请改用 `ensp_vrp_command`。
 * **VRP 控制台同一时刻只服务一个客户端。** eNSP 客户端在驱动某台设备时
   会占着它的控制台会话，第二个客户端能连上但收不到东西。工具会如实报告，
   不会干等。

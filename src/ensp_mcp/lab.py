@@ -266,12 +266,76 @@ class Lab:
         self._run(["registervm", str(path)])
 
     def device_disk(self, dev: LabDevice) -> Path | None:
-        """Locate the device's disk image inside the lab directory."""
+        """Locate the device's disk image inside the lab directory.
+
+        The disk that is actually attached to the machine wins: after a patch
+        the lab directory can hold several images, and only one of them is the
+        one the guest boots from.
+        """
+        attached = self._attached_disk(dev)
+        if attached is not None and attached.is_file():
+            return attached
         folder = self.root / "vms" / dev.name
         if not folder.is_dir():
             return None
         vdis = sorted(folder.rglob("*.vdi"), key=lambda p: p.stat().st_size)
         return vdis[-1] if vdis else None
+
+    def _attached_disk(self, dev: LabDevice) -> Path | None:
+        """The disk image the VM has attached, as VirtualBox reports it."""
+        try:
+            info = vbox.machine_readable(dev.vm)
+        except Exception:  # noqa: BLE001
+            return None
+        for key, value in info.items():
+            if not key.startswith(("SATA-", "IDE-", "SCSI-")):
+                continue
+            if not value.lower().endswith(".vdi"):
+                continue
+            path = Path(value)
+            if not path.is_absolute():
+                path = self.root / path
+            return path
+        return None
+
+    # ------------------------------------------------------------- patch --
+    def patch_marker(self, dev: LabDevice) -> Path:
+        return self.root / "vms" / dev.name / ".enspctl-patched.json"
+
+    def needs_patch(self, dev: LabDevice, disk: Path | None) -> bool:
+        """Does this device's ``resource.cfg`` still point at the old addresses?
+
+        Rewriting the image is expensive (a VDI -> raw -> VDI round trip), so
+        the result is remembered next to the machine and the work is skipped
+        when nothing changed.
+        """
+        marker = self.patch_marker(dev)
+        if disk is None or not marker.is_file():
+            return True
+        try:
+            state = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return True
+        try:
+            size = disk.stat().st_size
+        except OSError:
+            return True
+        return not (state.get("ip") == dev.ip
+                    and state.get("host") == self.host_ip
+                    and state.get("disk") == disk.name
+                    and state.get("size") == size)
+
+    def mark_patched(self, dev: LabDevice, disk: Path) -> None:
+        marker = self.patch_marker(dev)
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            size = disk.stat().st_size
+        except OSError:
+            size = -1
+        marker.write_text(json.dumps({
+            "ip": dev.ip, "host": self.host_ip,
+            "disk": disk.name, "size": size,
+        }, indent=2), encoding="utf-8")
 
     def destroy_vms(self) -> None:
         for dev in self.devices:

@@ -1,9 +1,17 @@
-"""Console session helpers on top of the VirtualBox screen primitives.
+"""Guest *screen* helpers on top of the VirtualBox screen primitives.
 
-The device console is a VGA text screen, so there is no byte stream to read:
-output comes back as an image of the screen and input goes in as keystrokes.
-This module wraps both so callers can think in terms of "send this command" and
-"show me the screen".
+.. warning::
+
+   This module is **not** a way to read device state.  The screen of an eNSP
+   device is the guest's Tiny Core Linux console, not the router CLI, and it
+   is a bitmap: recovering characters from it needs OCR, which this project
+   deliberately does not do.
+
+   Device state is read as **plain text** over the guest's TCP 40000, where
+   the VRP process itself speaks the CLI -- see :mod:`ensp_mcp.agentd` and
+   the ``ensp_vrp_command`` tool.  Nothing in this module may ever be used as
+   a fallback for that path: if the text console cannot be reached, the call
+   must fail, not degrade into reading pixels.
 """
 
 from __future__ import annotations
@@ -113,28 +121,14 @@ def send_lines(vm_name: str, lines: list[str], settle: float = 0.45) -> int:
 
 
 def capture(vm_name: str, out_path: str | Path | None = None) -> Path:
-    """Capture the device screen, defaulting to a temp file."""
+    """Capture the guest screen, defaulting to a temp file.
+
+    Diagnostic only: the PNG shows the guest's Linux console, never the VRP
+    CLI.  Use it to see whether a guest booted (login prompt) or died, not to
+    read router state.
+    """
     if out_path is None:
         import tempfile
 
         out_path = Path(tempfile.gettempdir()) / f"ensp-console-{vm_name}.png"
     return vbox.take_screenshot(vm_name, out_path)
-
-
-def read_screen_text(vm_name: str) -> dict:
-    """Best-effort *text* view of the screen.
-
-    There is no text channel: the screen is a bitmap of an 80x25 VGA text mode.
-    Recovering characters needs OCR, which this server does not do.  Callers that
-    need text should read the image content returned by the console tool.
-    """
-    path = capture(vm_name)
-    return {
-        "vm": vm_name,
-        "image_path": str(path),
-        "text": None,
-        "note": (
-            "The eNSP console is a VGA text screen (720x400, 80x25 cells), not a byte "
-            "stream, so it is returned as an image. Read the attached image."
-        ),
-    }

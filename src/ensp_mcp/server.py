@@ -3,12 +3,17 @@
 Three capabilities, all reverse-engineered from an installed eNSP 1.3.00.100:
 
 1. **Topology authoring** -- build, read and validate ``.topo`` files offline.
-2. **Screen console** -- read and drive a device's VirtualBox virtual screen
-   (``screenshotpng`` + ``keyboardputstring``). For an eNSP AR device this
-   screen shows the Tiny Core Linux guest, *not* the router CLI.
-3. **Real VRP console** -- run commands on the router itself and get exact
+2. **Real VRP console** -- run commands on the router itself and get exact
    text back. The guest's VRP process serves a plain-text console on TCP
-   40000; this is the same channel the eNSP client uses.
+   40000; this is the same channel the eNSP client uses.  **This is the only
+   way device state is read.**
+3. **Guest screen (diagnostic only)** -- look at the VirtualBox virtual screen
+   (``screenshotpng`` + ``keyboardputstring``) of the *guest*.  For an eNSP AR
+   device this screen shows the Tiny Core Linux guest, *not* the router CLI.
+   It exists to answer "did the guest boot?", and it is never scraped to
+   produce text: reading a device means reading the text console, and if the
+   text console cannot be reached the call fails instead of degrading into
+   pixels.
 
 Tool names are prefixed ``ensp_`` so they are easy to allow-list.
 """
@@ -232,15 +237,16 @@ def ensp_open_topology(path: str, wait_seconds: float = 0.0) -> str:
 
 @mcp.tool(structured_output=False)
 def ensp_console_screen(vm: str, save_path: str = "") -> list[Any]:
-    """Capture a running device's virtual screen.
+    """Capture a running device's guest screen (diagnostic only).
 
-    The screen is a 720x400 VGA text mode, so it comes back as an image. Read
-    the attached PNG to see what is on it.
+    **Do not use this tool to read device state.**  It returns a 720x400 PNG
+    bitmap of the guest's Tiny Core Linux console, not the router CLI, and
+    turning that bitmap into characters would need OCR.  This project reads
+    device state as plain text only, over the guest's TCP 40000, with
+    ``ensp_vrp_command``.
 
-    **For an eNSP AR device this is the guest's screen, not the router's**: the
-    guest is a Tiny Core Linux appliance sitting at a login prompt, while the
-    router runs as a separate process. To talk to the router use
-    ``ensp_vrp_command``, which returns exact text over the guest's TCP 40000.
+    Use this tool to answer "did the guest boot / did it die", i.e. whether the
+    login prompt is on screen.
 
     Args:
         vm: the device name, which is also the VirtualBox VM name (e.g. "R1").
@@ -252,7 +258,8 @@ def ensp_console_screen(vm: str, save_path: str = "") -> list[Any]:
         return [f"failed to capture {vm}: {exc}"]
     size = path.stat().st_size
     return [
-        f"console screen of {vm} ({size} bytes): {path}",
+        f"console screen of {vm} ({size} bytes): {path} "
+        f"(guest screen, not the router CLI - use ensp_vrp_command for state)",
         Image(path=str(path)),
     ]
 
@@ -359,8 +366,16 @@ def ensp_vrp_command(guest_ip: str, commands: list[str], wait: float = 1.5) -> s
     console on TCP 40000, the same channel the eNSP client itself uses. Output
     comes back verbatim -- no screenshots and no OCR.
 
+    **This is the only supported way to read device state.**  The screen of an
+    eNSP device is a bitmap of the guest's Linux console; it is never scraped
+    and never used as a fallback.  If the console cannot be reached, or the
+    device does not execute a command, the call reports ``ok: false`` instead
+    of returning a picture or a banner.
+
     The console accepts one client at a time, so all commands run over a single
-    short-lived session. A throw-away newline is sent first to wake the session.
+    short-lived session.  The session waits out the ``Press any key to get
+    started`` banner a freshly booted device shows, and verifies that every
+    command was echoed back before it reports success.
 
     Args:
         guest_ip: the device's address on the host-only subnet, e.g. "192.168.56.2".

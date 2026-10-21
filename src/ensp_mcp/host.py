@@ -166,24 +166,39 @@ class HostDevice:
     def _control_worker(self) -> None:
         deadline = time.time() + 600
         sock = None
+        # The guest gives up quickly: agentd creates its control thread and
+        # then waits only a moment for the host to connect before it exits
+        # (and taking the whole guest down with it).  The retry interval is
+        # therefore short - a slow poll loses the race and the device dies
+        # right after the serial handshake.
         while time.time() < deadline and not self._stop.is_set():
             try:
                 sock = socket.create_connection(
-                    (self.opts.guest_ip, AGENTD_CONTROL_PORT), timeout=3)
+                    (self.opts.guest_ip, AGENTD_CONTROL_PORT), timeout=2)
                 self.log(f"control: connected {self.opts.guest_ip}:{AGENTD_CONTROL_PORT}")
                 break
             except OSError:
-                time.sleep(1.0)
+                time.sleep(0.2)
         if sock is None:
             self.failed = "the guest never answered on the agentd control port"
             self.ready.set()
             return
-        sock.settimeout(240)
+        # The control channel is silent once the device is up: agentd only sends
+        # the boot/prepare/DEV0/DEV1/DEV2 frames and then waits.  A read timeout
+        # therefore means "nothing to say", *not* "the device is gone" - and it
+        # must not close the socket: agentd powers the guest off as soon as the
+        # control connection drops.
+        sock.settimeout(5.0)
         buf = b""
         try:
             while not self._stop.is_set():
                 while len(buf) < 44:
-                    chunk = sock.recv(44 - len(buf))
+                    if self._stop.is_set():
+                        return
+                    try:
+                        chunk = sock.recv(44 - len(buf))
+                    except socket.timeout:
+                        continue
                     if not chunk:
                         self.log("control: peer closed")
                         self.ready.set()
@@ -200,6 +215,7 @@ class HostDevice:
                 if code in (8, 9):
                     self.ready.set()
         except OSError as exc:
+            self.log(f"control: {type(exc).__name__}: {exc}")
             self.failed = str(exc)
             self.ready.set()
 

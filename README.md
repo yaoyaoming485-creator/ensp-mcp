@@ -95,13 +95,24 @@ That is exact text — no screenshots, no OCR, no window automation, and no
 elevation. It also removes the character-drop and paging problems that make
 screen-scraping unreliable.
 
+**Reading policy: text only.** Device state is read over this socket and
+nowhere else. The screen is never scraped, and the text console is never
+allowed to fall back to it: if the console cannot be reached, or a command
+does not come back, the call fails loudly (non-zero exit / `ok: false`)
+instead of returning a picture or a boot banner. A freshly booted device
+answers with `Press any key to get started`, and a single throw-away
+newline is not enough to get past it — if that newline arrives before the
+device reaches the banner it is lost, and the first command is then eaten as
+the key press. The client therefore waits for a real prompt and verifies
+that every command was echoed back before it reports success.
+
 The VirtualBox virtual screen is a *different* thing: for an AR device it
 shows the **Tiny Core Linux guest** (`Core Linux`, kernel `3.0.21-tinycore`,
 hostname `box`) sitting at a login prompt, because the router runs in a
 separate process on that same machine. The screen tools
 (`ensp_console_screen` / `ensp_console_type` / ...) therefore drive the guest,
-not the router — they are kept for completeness, but `ensp_vrp_command` is the
-one you want.
+not the router — they are kept as **boot diagnostics** ("did the guest come
+up?"), and they are not a way to read device state.
 
 ### 3. How the guest agent talks to the host
 
@@ -237,6 +248,7 @@ $ enspctl lab down --root ./demo
 | `enspctl topo validate --spec s.json` | check a spec |
 | `enspctl lab create NAME --topo x.topo --root DIR` | create a lab (add `--with-vms` to clone the machines) |
 | `enspctl lab up --root DIR` | patch, start and drive the whole lab |
+| `enspctl lab up --root DIR --no-patch` | start without rewriting the guest images |
 | `enspctl lab down --root DIR` | stop the machines |
 | `enspctl lab status --root DIR` | show the devices and whether they answer |
 | `enspctl lab patch --root DIR` | rewrite each device's `resource.cfg` |
@@ -259,7 +271,11 @@ and a manifest. For every device it:
   lab runs — a pipe VirtualBox creates itself only grants the host read access;
 * rewrites `resource.cfg` so VRP's interface sockets point at the addresses
   the lab handed out — otherwise VRP exits with
-  `VPORT_Hal_PortEnable failed!`.
+  `VPORT_Hal_PortEnable failed!`. The rewrite is remembered next to the
+  machine, so `lab up` does not pay for the (slow) image round trip twice, and
+  the image keeps a stable name instead of growing a `-patched` suffix on
+  every run. If a rewrite fails, `lab up` aborts instead of starting a lab
+  whose guests cannot bind their sockets.
 
 `lab up` then drives every guest the way the eNSP client would: the serial
 handshake, the control frames, and the media server.
@@ -332,18 +348,21 @@ effect without restarting the web server.
 | `ensp_vrp_command` | run VRP commands, get the router's **exact text** back |
 | `ensp_vrp_agent_handshake` | run the guest agentd control handshake and report what the device says |
 
-**Console — the VirtualBox screen**
+**Console — the VirtualBox screen (diagnostic only)**
 
 | Tool | Purpose |
 | --- | --- |
-| `ensp_console_screen` | capture the screen; returns the PNG |
+| `ensp_console_screen` | capture the guest's screen; returns the PNG |
 | `ensp_console_type` | type text (+ optional Enter) |
 | `ensp_console_key` | send a named key (`ctrl-z`, arrows, `F1`…) |
 | `ensp_console_send_lines` | send a configuration block, one line at a time |
 
-Prefer `ensp_vrp_command` for anything that talks to the router: it returns
+These drive the *guest's* Linux console, not the router. They are here to
+answer "did the device boot?", and they are **not** a way to read device
+state: the screen is a bitmap, and this project does not OCR it. Use
+`ensp_vrp_command` for anything that talks to the router — it returns exact
 text, it does not drop characters, and it is not affected by the paging
-prompt. The screen tools drive the guest's Linux console instead.
+prompt.
 
 ```jsonc
 // ensp_vrp_command(guest_ip="192.168.56.101", commands=["display version"])
@@ -407,11 +426,12 @@ Time Zone(China-Standard-Time) : UTC-08:00
 
 ## Verification
 
-Two suites, both green:
+Three suites, all green:
 
 | Suite | What it covers |
 | --- | --- |
 | `tests/smoke.py` | module level: catalogue, `.topo` build/write/read round-trip, validation failures, parsing a real eNSP-authored topology, VirtualBox inventory, screenshot, keyboard injection |
+| `tests/test_console_text.py` | the text console: the boot banner must not swallow a command, a command that did not run must fail loudly, and the text path must never touch the screen code |
 | `tests/mcp_client.py` | drives the server over JSON-RPC stdio like an agent does: `initialize`, `tools/list`, then calls **every** tool and checks the results |
 
 `mcp_client.py` is the real acceptance test — it asserts the server advertises all
@@ -456,10 +476,11 @@ conformance is not the same as the consumer accepting the output.
 
 ## Known limitations
 
-* **The screen tools still have the old limitations.** `ensp_console_screen` is
-  a bitmap and `ensp_console_type` types into the guest's Linux console, so
-  they drop characters and give no text back. Use `ensp_vrp_command` instead —
-  it returns exact text.
+* **The screen tools are diagnostic only.** `ensp_console_screen` is a bitmap
+  of the guest's Linux console and `ensp_console_type` types into that
+  console, so they drop characters and give no text back. They are never used
+  to read device state and never act as a fallback for the text console —
+  use `ensp_vrp_command` instead, it returns exact text.
 * **The VRP console serves one client at a time.** When the eNSP client is
   driving a device it holds that device's console session, and a second
   client connects but receives nothing. The tools report that rather than

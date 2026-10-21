@@ -163,18 +163,31 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
         if vm_name:
             # Move the patched disk next to the original (the temporary
             # directory is wiped at the end, and the VM must not be left
-            # pointing at a file that is about to disappear).
-            final = vdi.with_name(vdi.stem + "-patched.vdi")
+            # pointing at a file that is about to disappear).  The name is
+            # stable: an image that is already called "...-patched.vdi" is
+            # replaced by a file with the same name instead of growing
+            # another "-patched" suffix on every run.
+            base = vdi.stem
+            while base.endswith("-patched"):
+                base = base[: -len("-patched")]
+            final = vdi.with_name(base + "-patched.vdi")
             run(["closemedium", "disk", str(patched)], check=False)
+            # detach the old disk before touching the file
+            run(["storageattach", vm_name, "--storagectl", storagectl,
+                 "--port", str(port), "--device", str(device),
+                 "--type", "hdd", "--medium", "none"])
+            if final.resolve() == vdi.resolve():
+                # the patched disk replaces the source in place
+                run(["closemedium", "disk", str(vdi), "--delete"], check=False)
+                if vdi.exists():
+                    vdi.unlink()
+            else:
+                run(["closemedium", "disk", str(vdi), "--delete"], check=False)
             shutil.move(str(patched), str(final))
             # swap the disk into the VM (the VM must be powered off)
             run(["storageattach", vm_name, "--storagectl", storagectl,
                  "--port", str(port), "--device", str(device),
-                 "--type", "hdd", "--medium", "none"])
-            run(["storageattach", vm_name, "--storagectl", storagectl,
-                 "--port", str(port), "--device", str(device),
                  "--type", "hdd", "--medium", str(final)])
-            run(["closemedium", "disk", str(vdi), "--delete"], check=False)
         else:
             run(["closemedium", "disk", str(vdi), "--delete"], check=False)
             shutil.copyfile(patched, vdi)
