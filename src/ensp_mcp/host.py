@@ -55,6 +55,56 @@ class PipeClosed(RuntimeError):
     """The guest closed the serial pipe."""
 
 
+class MediaHub:
+    """Routes the media frames between the devices of a lab.
+
+    The guest hands its messages to the host as 244-byte frames; the ssid of
+    the device they are meant for sits at offset 178.  The host has to give
+    the frame to that device's media connection - dropping it leaves the
+    devices without a working link.
+    """
+
+    FRAME_LENGTH = 244
+    SSID_OFFSET = 178
+    SSID_LENGTH = 37
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._targets: dict[bytes, socket.socket] = {}
+        self.forwarded = 0
+        self.dropped = 0
+
+    def register(self, ssid: bytes, conn: socket.socket) -> None:
+        if not ssid:
+            return
+        with self._lock:
+            self._targets[bytes(ssid)] = conn
+
+    def unregister(self, conn: socket.socket) -> None:
+        with self._lock:
+            for ssid, target in list(self._targets.items()):
+                if target is conn:
+                    del self._targets[ssid]
+
+    def route(self, frame: bytes) -> bool:
+        """Hand a frame to the device it is addressed to."""
+        if len(frame) < self.FRAME_LENGTH:
+            return False
+        ssid = frame[self.SSID_OFFSET:self.SSID_OFFSET + self.SSID_LENGTH]
+        with self._lock:
+            target = self._targets.get(ssid)
+        if target is None:
+            self.dropped += 1
+            return False
+        try:
+            target.sendall(frame)
+        except OSError:
+            self.dropped += 1
+            return False
+        self.forwarded += 1
+        return True
+
+
 class UdpRelay:
     """Relay the VRP's interface traffic between linked devices.
 
@@ -101,11 +151,16 @@ class UdpRelay:
 
     def _run(self) -> None:
         assert self.sock is not None
+        last_report = time.time()
         while not self._stop.is_set():
             self.sock.settimeout(1.0)
             try:
                 data, peer = self.sock.recvfrom(65535)
             except socket.timeout:
+                if time.time() - last_report > 30:
+                    last_report = time.time()
+                    self.log(f"udp relay: {self.received} datagram(s) in, "
+                             f"{self.forwarded} forwarded")
                 continue
             except OSError:
                 break
@@ -117,12 +172,15 @@ class UdpRelay:
             iface = source_port - LOCAL_PORT_BASE
             target = self.peers.get(iface)
             if target is None:
+                if self.received == 1:
+                    self.log(f"udp relay: no peer for interface {iface} "
+                             f"(source {peer[0]}:{source_port})")
                 continue
             try:
                 self.sock.sendto(data, target)
                 self.forwarded += 1
-            except OSError:
-                pass
+            except OSError as exc:
+                self.log(f"udp relay: cannot forward to {target}: {exc}")
 
     def stop(self) -> None:
         self._stop.set()
@@ -147,6 +205,12 @@ class HostOptions:
     verbose: bool = True
     #: interface index -> (peer address, peer local port) for the UDP relay
     peers: dict[int, tuple[str, int]] = field(default_factory=dict)
+    #: the ssids of the linked devices - the guest needs them to address them
+    peer_ssids: list[bytes] = field(default_factory=list)
+    #: (address, ssid) of the linked devices, for the announcement frame
+    peer_infos: list[tuple[str, bytes]] = field(default_factory=list)
+    #: routes the media frames between the devices of the lab
+    hub: "MediaHub | None" = None
 
 
 @dataclass
@@ -259,6 +323,29 @@ class HostDevice:
                 self._serial_ready.clear()
                 time.sleep(1.0)
 
+    def _announce_peers(self, conn: socket.socket) -> None:
+        """Tell the guest which devices it is linked to.
+
+        The guest addresses a peer by its ssid, and it can only ARP for the
+        peer once it knows the peer's address: the announcement carries the
+        ssid at offset 178 of a 244-byte frame (the frame format the guest
+        itself uses) and the peer's address in the payload.
+        """
+        for address, ssid in self.opts.peer_infos:
+            if not ssid:
+                continue
+            frame = bytearray(MediaHub.FRAME_LENGTH)
+            text = address.encode("ascii")
+            frame[0:len(text)] = text
+            frame[MediaHub.SSID_OFFSET:MediaHub.SSID_OFFSET + len(ssid)] = ssid
+            try:
+                conn.sendall(bytes(frame))
+            except OSError as exc:
+                self.log(f"media: cannot announce the peer: {exc}")
+                return
+            self.log(f"media: announced the peer {address} "
+                     f"({ssid[:8].decode('ascii', 'replace')}...)")
+
     def _media_worker(self) -> None:
         # The listening socket stays open for the whole life of the driver:
         # the guest's media client connects more than once, and a refused
@@ -279,6 +366,9 @@ class HostDevice:
                     return
                 self.log(f"media: guest connected from {peer}")
                 self._media_ready.set()
+                if self.opts.hub is not None:
+                    self.opts.hub.register(self.opts.device_id, conn)
+                self._announce_peers(conn)
                 conn.settimeout(2.0)
                 buf = b""
                 frames = 0
@@ -292,8 +382,8 @@ class HostDevice:
                     if not chunk:
                         break
                     buf += chunk
-                    while len(buf) >= 244:
-                        frame, buf = buf[:244], buf[244:]
+                    while len(buf) >= MediaHub.FRAME_LENGTH:
+                        frame, buf = buf[:MediaHub.FRAME_LENGTH], buf[MediaHub.FRAME_LENGTH:]
                         frames += 1
                         payload = frame[:240]
                         text = payload.decode("ascii", "replace")
@@ -303,10 +393,14 @@ class HostDevice:
                             self.log(f"media[{frames}] TEXT| {text!r}")
                         else:
                             self.log(f"media[{frames}] HEX | {payload[:64].hex(' ')}")
+                        if self.opts.hub is not None:
+                            self.opts.hub.route(frame)
                 try:
                     conn.close()
                 except OSError:
                     pass
+                if self.opts.hub is not None:
+                    self.opts.hub.unregister(conn)
                 # the guest is gone - it may come back after a restart
                 self._media_ready.clear()
                 time.sleep(0.5)

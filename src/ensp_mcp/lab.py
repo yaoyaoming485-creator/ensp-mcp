@@ -149,7 +149,18 @@ class Lab:
         ``10000 + n`` to the host; the host has to forward it to the peer
         device's local port for the interface the link connects.
         """
-        out: dict[int, tuple[str, int]] = {}
+        return {i: (ip, port) for i, (ip, port, _ssid) in self.peer_links(dev).items()}
+
+    def peer_links(self, dev: LabDevice) -> dict[int, tuple[str, int, str]]:
+        """Like :meth:`peers`, but with the peer's ssid.
+
+        The guest addresses its peer by the peer's ssid: the agent puts the
+        traffic into the message queue that is named after the receiver, and
+        the host routes the frames by the ssid they carry.  A device that is
+        never told the ssid of its peer cannot address it at all - the
+        interface comes up but nothing is ever delivered.
+        """
+        out: dict[int, tuple[str, int, str]] = {}
         for link in self.links:
             a, b = link.get("a"), link.get("b")
             if a == dev.name:
@@ -164,7 +175,7 @@ class Lab:
                 peer = self.device(other)
             except LabError:
                 continue
-            out[int(mine)] = (peer.ip, LOCAL_PORT_BASE + int(theirs))
+            out[int(mine)] = (peer.ip, LOCAL_PORT_BASE + int(theirs), peer.device_id)
         return out
 
     # ------------------------------------------------------------- create --

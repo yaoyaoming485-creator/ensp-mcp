@@ -108,9 +108,32 @@ State machine (`control`, `0x0804ad9b`): a function-pointer table drives
 `entry_state → start_state → booting_state → rebooting_state → exit_state`,
 with `lookup_transitions()` choosing the next state.
 
+`proc_msg()` (`0x0804adf2`) owns the control socket and checks the reply:
+
+```c
+n = recv(sock, buf, 0x2c, 0);              /* 44 bytes               */
+code = ntohl(*(uint32_t *)buf);
+if (memcmp(buf + 4, own_ssid, 0x25) == 0 && code == 1) {
+    config_received = 1;                    /* releases start_state    */
+}
+```
+
+**The "go" reply must carry the guest's own ssid** — the host copies it out
+of the boot frame, which carries it. A reply with a different ssid is
+silently ignored and the guest never starts.
+
 **The socket must stay open.** `main()` registers `atexit(power_off)` and
 `startup()` joins the `proc_msg` thread, so the moment the control socket
-closes the guest powers itself off.
+closes the guest powers itself off. A *read timeout* is not a closed
+connection: the channel is silent once the device is up, and treating the
+timeout as a fatal error closes the socket and kills the device.
+
+**The connect must not be abandoned either.** The guest creates its control
+thread about two seconds after the serial handshake and accepts the
+connection then. A connect that is cut short in that very moment leaves the
+guest with a dead socket: its `accept()` fails, it aborts with
+`Send boot message to control socket failed` and powers itself off. Keep the
+attempt alive (a long connect timeout) and start it as early as possible.
 
 ### ③ Media — the guest dials *back* to the host
 
@@ -130,6 +153,58 @@ The 244-byte frame is `[240 bytes payload][37-byte ssid at offset 178]`.
 With no listener the guest logs
 `Failed to connect to remote media server: Connection refused.` and the SSID
 never reaches the host.
+
+**The listening socket must stay open for the whole life of the driver.** The
+guest's media client connects more than once; a server that closes its
+listening socket after the first accept refuses the re-connect, and the guest
+gives up and powers itself off.
+
+The frames are the guest's messages for *other* devices: the ssid at offset
+178 is the receiver's, so the host routes a frame to the device that owns
+that ssid (the eNSP host does the same — `PortLink` / `comport` /
+`localport` / `peerport` in `eNSP_VBoxServer.exe`).
+
+### ③b Interface traffic — UDP, the *fourth* thing the host must do
+
+`resource.cfg` gives every interface a UDP socket:
+
+```
+interface[N] = socket[local:<own ip>:10000+N dest:<host ip>:<port> role:client protocol:udp]
+```
+
+The VRP sends its interface traffic (a 4-byte keepalive, `00 00 00 01`, was
+observed on every interface) as UDP datagrams from its own port `10000+N` to
+the host. The host has to
+
+* **give every device its own port** — the port baked into the image
+  (`30000+N`) is the same for all devices, so two devices would send to the
+  same host port and the host could no longer tell them apart. The rewrite
+  points the device at its own media port; TCP (the agent's media channel)
+  and UDP (the interface traffic) can share a port number.
+* **relay the datagrams to the peer** the topology links the interface to:
+  the source port `10000+N` says which interface the datagram belongs to, and
+  the peer receives it on its own `10000+M`.
+
+Without the relay the interface never comes up, the VRP's interface process
+dies (a register dump in `/dev/upload/dev1.log`), the agent exits and the
+guest powers itself off.
+
+### ③c What the guest does *not* know
+
+The guest never learns its peer's address from the handshake, from
+`resource.cfg` or from the control frames — the host has to tell it, and the
+exact format of that announcement is still unknown. Until it does, the VRP
+sends keepalives but never ARPs for the peer, so the link is "up" while no
+IP traffic flows.
+
+`dhcp_config()` (`0x08049ae4`) shows the machinery the guest uses for
+configuration: a UDP socket bound to `0.0.0.0:60001` (it walks up the port
+numbers until one is free), and `send_cfg_msg()` (`0x08049814`) sending a
+4-byte message to `{AF_INET, htons(56789), inet_addr(...)}`. `write_cfg_msg()`
+writes 4 bytes to the "configuration socket" in a loop until a flag is set.
+Those 4 bytes are the same shape as the interface keepalives, so the
+configuration exchange is very likely the mechanism that hands the peer to
+the device.
 
 ### ④ Console — the router's own CLI
 

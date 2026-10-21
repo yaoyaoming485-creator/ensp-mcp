@@ -24,7 +24,7 @@ from pathlib import Path
 
 from . import agentd
 from . import lab as labmod
-from .host import HostDevice, HostOptions
+from .host import HostDevice, HostOptions, MediaHub
 
 
 def pid_file(root: Path) -> Path:
@@ -187,11 +187,15 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
     pid_file(root).write_text(str(os.getpid()), encoding="utf-8")
 
     devs: list[HostDevice] = []
+    hub = MediaHub()
     for d in lab.devices:
+        peer_links = lab.peer_links(d)
         opts = HostOptions(
             guest_ip=d.ip, pipe_path=d.pipe, media_port=d.media_port,
             host_ip=lab.host_ip, device_id=d.device_id.encode("latin-1"),
-            verbose=verbose, peers=lab.peers(d),
+            verbose=verbose, peers=lab.peers(d), hub=hub,
+            peer_ssids=[ssid.encode("latin-1") for _ip, _port, ssid in peer_links.values()],
+            peer_infos=[(ip, ssid.encode("latin-1")) for ip, _port, ssid in peer_links.values()],
         )
         devs.append(HostDevice(opts=opts, log_prefix=f"{d.name}: ")
                     .start(wait_ready=False))
