@@ -34,12 +34,18 @@ class ResourceCfgError(RuntimeError):
     pass
 
 
-def rewrite_text(text: str, guest_ip: str, host_ip: str) -> tuple[str, int]:
+def rewrite_text(text: str, guest_ip: str, host_ip: str,
+                 media_port: int | None = None) -> tuple[str, int]:
     """Point every ``local:``/``dest:`` address at the lab's addresses.
 
     ``local:`` is the device's own address (it must be one the device really
     owns, otherwise VRP cannot bind it).  ``dest:`` is the peer side; in a lab
     that is the host, which relays the link traffic.
+
+    ``media_port`` is the host port the device's traffic is sent to.  It has
+    to be the *device's* own port: the port baked into the image is the same
+    for every device, so two devices would send their traffic to the same
+    host port and the host could no longer tell them apart.
     """
     out = text
     changed = 0
@@ -47,7 +53,10 @@ def rewrite_text(text: str, guest_ip: str, host_ip: str) -> tuple[str, int]:
         out = out.replace(f"local:{ip}:", f"local:{guest_ip}:")
         changed += 1
     for ip in sorted(set(re.findall(r"dest:(\d+\.\d+\.\d+\.\d+):", text))):
-        out = out.replace(f"dest:{ip}:", f"dest:{host_ip}:")
+        if media_port is None:
+            out = out.replace(f"dest:{ip}:", f"dest:{host_ip}:")
+        else:
+            out = re.sub(rf"dest:{re.escape(ip)}:\d+", f"dest:{host_ip}:{media_port}", out)
         changed += 1
     return out, changed
 
@@ -55,9 +64,9 @@ def rewrite_text(text: str, guest_ip: str, host_ip: str) -> tuple[str, int]:
 # ------------------------------------------------------------------ loop --
 
 _LOOP_SCRIPT = r"""#!/bin/bash
-# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip>
+# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip> [dest-port]
 set -e
-RAW="$1"; GUEST="$2"; HOST="$3"
+RAW="$1"; GUEST="$2"; HOST="$3"; PORT="$4"
 MNT=/mnt/enspctl-edit
 LOOP=$(losetup -j "$RAW" -O NAME --noheadings 2>/dev/null | head -1 | tr -d ' ')
 if [ -z "$LOOP" ]; then
@@ -72,7 +81,12 @@ if [ ! -f "$F" ]; then
   exit 3
 fi
 cp "$F" "$F.bak"
-sed -i "s/local:[0-9.]*:/local:${GUEST}:/g; s/dest:[0-9.]*:/dest:${HOST}:/g" "$F"
+sed -i "s/local:[0-9.]*:/local:${GUEST}:/g" "$F"
+if [ -n "$PORT" ]; then
+  sed -i "s/dest:[0-9.]*:[0-9]*/dest:${HOST}:${PORT}/g" "$F"
+else
+  sed -i "s/dest:[0-9.]*:/dest:${HOST}:/g" "$F"
+fi
 echo "patched $(grep -c 'local:' "$F") socket lines"
 umount "$MNT"
 losetup -d "$LOOP" 2>/dev/null || true
@@ -80,6 +94,7 @@ losetup -d "$LOOP" 2>/dev/null || true
 
 
 def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
+                          media_port: int | None = None,
                           wsl: bool = True) -> int:
     """Patch the file inside a raw image using WSL's loop device."""
     if not wsl:
@@ -102,8 +117,11 @@ def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
     script_wsl = to_wsl(str(script_win))
     image_wsl = to_wsl(image_win)
 
+    args = [script_wsl, image_wsl, guest_ip, host_ip]
+    if media_port is not None:
+        args.append(str(media_port))
     proc = subprocess.run(
-        ["wsl", "-u", "root", "-e", "bash", script_wsl, image_wsl, guest_ip, host_ip],
+        ["wsl", "-u", "root", "-e", "bash"] + args,
         capture_output=True, text=True, errors="replace", timeout=900,
     )
     if proc.returncode != 0:
@@ -144,7 +162,8 @@ def disk_slot(vm_name: str, vboxmanage: str | None = None) -> tuple[str, int, in
 def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 vboxmanage: str | None = None,
                 vm_name: str = "", storagectl: str = "IDE",
-                port: int = 0, device: int = 0) -> tuple[int, Path]:
+                port: int = 0, device: int = 0,
+                media_port: int | None = None) -> tuple[int, Path]:
     """Patch ``resource.cfg`` inside a VDI image.
 
     VirtualBox cannot mount a VDI on a loop device, so the disk is converted
@@ -182,7 +201,7 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
 
     try:
         run(["clonemedium", "disk", str(vdi), str(raw), "--format", "RAW"])
-        n = rewrite_in_raw_image(raw, guest_ip, host_ip)
+        n = rewrite_in_raw_image(raw, guest_ip, host_ip, media_port=media_port)
         run(["clonemedium", "disk", str(raw), str(patched), "--format", "VDI"])
         if vm_name:
             # Move the patched disk next to the original (the temporary

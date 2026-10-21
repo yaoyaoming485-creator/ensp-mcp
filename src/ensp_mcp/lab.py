@@ -41,6 +41,8 @@ DEFAULT_HOST_IP = "192.168.56.1"
 DEFAULT_BASE_IP = 101
 DEFAULT_MEDIA_PORT = 20002
 DEFAULT_PIPE_PREFIX = "enspctl"
+#: the guest's own ports: interface n sends its traffic from 10000 + n
+LOCAL_PORT_BASE = 10000
 
 # eNSP's own AR device image, used as the base disk for new device VMs.
 # The install keeps a base disk plus a *difference* disk; the difference disk
@@ -95,6 +97,8 @@ class Lab:
     devices: list[LabDevice] = field(default_factory=list)
     subnet: str = DEFAULT_SUBNET
     host_ip: str = DEFAULT_HOST_IP
+    #: the topology's links: {"a": name, "b": name, "a_port": int, "b_port": int}
+    links: list[dict] = field(default_factory=list)
 
     # ------------------------------------------------------------------ io --
     @property
@@ -109,6 +113,7 @@ class Lab:
             "host_ip": self.host_ip,
             "topo": self.topo_path.name,
             "devices": [asdict(d) for d in self.devices],
+            "links": self.links,
         }
         self.manifest.write_text(
             json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -128,6 +133,7 @@ class Lab:
             devices=devs,
             subnet=data.get("subnet", DEFAULT_SUBNET),
             host_ip=data.get("host_ip", DEFAULT_HOST_IP),
+            links=list(data.get("links", [])),
         )
 
     def device(self, name: str) -> LabDevice:
@@ -135,6 +141,31 @@ class Lab:
             if d.name == name or d.vm == name:
                 return d
         raise LabError(f"no device named {name!r} in lab {self.name!r}")
+
+    def peers(self, dev: LabDevice) -> dict[int, tuple[str, int]]:
+        """Where the traffic of each of ``dev``'s interfaces has to go.
+
+        The guest sends the traffic of interface *n* from its local port
+        ``10000 + n`` to the host; the host has to forward it to the peer
+        device's local port for the interface the link connects.
+        """
+        out: dict[int, tuple[str, int]] = {}
+        for link in self.links:
+            a, b = link.get("a"), link.get("b")
+            if a == dev.name:
+                other, mine, theirs = b, link.get("a_port"), link.get("b_port")
+            elif b == dev.name:
+                other, mine, theirs = a, link.get("b_port"), link.get("a_port")
+            else:
+                continue
+            if other is None or mine is None or theirs is None:
+                continue
+            try:
+                peer = self.device(other)
+            except LabError:
+                continue
+            out[int(mine)] = (peer.ip, LOCAL_PORT_BASE + int(theirs))
+        return out
 
     # ------------------------------------------------------------- create --
     @classmethod
@@ -163,6 +194,13 @@ class Lab:
 
         lab = cls(name=name, root=root, topo_path=topo_dst,
                   subnet=subnet, host_ip=host_ip)
+        for link in parsed.get("links", []):
+            lab.links.append({
+                "a": link.get("a"), "b": link.get("b"),
+                "a_port": link.get("a_port"), "b_port": link.get("b_port"),
+                "a_if": link.get("a_if"), "b_if": link.get("b_if"),
+                "type": link.get("type"),
+            })
         for i, dev in enumerate(parsed.get("devices", [])):
             vm = f"{name}-{dev['name']}"
             # the ssid is 37 bytes: the 36-character UUID plus a NUL
@@ -309,12 +347,14 @@ class Lab:
     def patch_marker(self, dev: LabDevice) -> Path:
         return self.root / "vms" / dev.name / ".enspctl-patched.json"
 
-    def needs_patch(self, dev: LabDevice, disk: Path | None) -> bool:
+    def needs_patch(self, dev: LabDevice, disk: Path | None,
+                    dest_port: bool = True) -> bool:
         """Does this device's ``resource.cfg`` still point at the old addresses?
 
         Rewriting the image is expensive (a VDI -> raw -> VDI round trip), so
         the result is remembered next to the machine and the work is skipped
-        when nothing changed.
+        when nothing changed.  The marker also records *how* the file was
+        written: a change in the rewrite itself has to force a new one.
         """
         marker = self.patch_marker(dev)
         if disk is None or not marker.is_file():
@@ -327,12 +367,15 @@ class Lab:
             size = disk.stat().st_size
         except OSError:
             return True
+        if bool(state.get("dest_port")) != bool(dest_port):
+            return True
         return not (state.get("ip") == dev.ip
                     and state.get("host") == self.host_ip
                     and state.get("disk") == disk.name
                     and state.get("size") == size)
 
-    def mark_patched(self, dev: LabDevice, disk: Path) -> None:
+    def mark_patched(self, dev: LabDevice, disk: Path,
+                     dest_port: bool = True) -> None:
         marker = self.patch_marker(dev)
         marker.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -342,6 +385,7 @@ class Lab:
         marker.write_text(json.dumps({
             "ip": dev.ip, "host": self.host_ip,
             "disk": disk.name, "size": size,
+            "dest_port": bool(dest_port),
         }, indent=2), encoding="utf-8")
 
     def destroy_vms(self) -> None:
