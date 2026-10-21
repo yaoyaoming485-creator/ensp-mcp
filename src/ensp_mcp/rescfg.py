@@ -119,6 +119,28 @@ def _count_changes(out: str) -> int:
 
 # ------------------------------------------------------------- vboxshare --
 
+def disk_slot(vm_name: str, vboxmanage: str | None = None) -> tuple[str, int, int]:
+    """Where the machine's disk is attached: ``(controller, port, device)``.
+
+    A machine whose disk was detached by an interrupted run has none, so the
+    default slot of the lab is used instead - the patch then puts the disk
+    back where it belongs.
+    """
+    if vboxmanage is None:
+        from . import vbox
+        vboxmanage = vbox.vboxmanage_path()
+    try:
+        proc = subprocess.run([vboxmanage, "showvminfo", vm_name, "--machinereadable"],
+                              capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return "IDE", 0, 0
+    for line in proc.stdout.splitlines():
+        m = re.match(r'^(IDE|SATA|SCSI)-(\d+)-(\d+)="(.*)"\s*$', line.strip())
+        if m and m.group(4).lower().endswith(".vdi"):
+            return m.group(1).upper(), int(m.group(2)), int(m.group(3))
+    return "IDE", 0, 0
+
+
 def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 vboxmanage: str | None = None,
                 vm_name: str = "", storagectl: str = "IDE",
@@ -174,10 +196,14 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 base = base[: -len("-patched")]
             final = vdi.with_name(base + "-patched.vdi")
             run(["closemedium", "disk", str(patched)], check=False)
-            # detach the old disk before touching the file
-            run(["storageattach", vm_name, "--storagectl", storagectl,
-                 "--port", str(port), "--device", str(device),
-                 "--type", "hdd", "--medium", "none"])
+            # the slot the disk sits in - a machine whose disk was detached
+            # by an interrupted run has none, so the default is used
+            ctl, prt, dev = disk_slot(vm_name, vboxmanage)
+            # detach the old disk before touching the file (there may be
+            # nothing to detach - that is not an error)
+            run(["storageattach", vm_name, "--storagectl", ctl,
+                 "--port", str(prt), "--device", str(dev),
+                 "--type", "hdd", "--medium", "none"], check=False)
             if final.resolve() == vdi.resolve():
                 # the patched disk replaces the source in place
                 run(["closemedium", "disk", str(vdi), "--delete"], check=False)
@@ -187,8 +213,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 run(["closemedium", "disk", str(vdi), "--delete"], check=False)
             shutil.move(str(patched), str(final))
             # swap the disk into the VM (the VM must be powered off)
-            run(["storageattach", vm_name, "--storagectl", storagectl,
-                 "--port", str(port), "--device", str(device),
+            run(["storageattach", vm_name, "--storagectl", ctl,
+                 "--port", str(prt), "--device", str(dev),
                  "--type", "hdd", "--medium", str(final)])
         else:
             run(["closemedium", "disk", str(vdi), "--delete"], check=False)

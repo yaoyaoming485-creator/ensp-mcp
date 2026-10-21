@@ -82,6 +82,8 @@ class HostDevice:
     events: list[str] = field(default_factory=list)
     ready: threading.Event = field(default_factory=threading.Event)
     failed: str = ""
+    #: when the control channel was last tried
+    last_try: float = 0.0
 
     # ------------------------------------------------------------------ --
     def log(self, msg: str) -> None:
@@ -174,49 +176,79 @@ class HostDevice:
                 time.sleep(1.0)
 
     def _media_worker(self) -> None:
-        while not self._stop.is_set():
-            server = MediaServer(self.opts.host_ip, self.opts.media_port)
-            try:
-                server.start()
-                self.log(f"media: listening on {self.opts.host_ip}:{self.opts.media_port}")
-                conn, peer = server.accept(timeout=300.0)
-            except Exception as exc:  # noqa: BLE001
-                self.log(f"media: {exc}")
-                return
-            finally:
-                server.close()
-            self.log(f"media: guest connected from {peer}")
-            self._media_ready.set()
-            conn.settimeout(2.0)
-            buf = b""
-            frames = 0
+        # The listening socket stays open for the whole life of the driver:
+        # the guest's media client connects more than once, and a refused
+        # re-connect makes the guest give up and power itself off.
+        server = MediaServer(self.opts.host_ip, self.opts.media_port)
+        try:
+            server.start()
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"media: {exc}")
+            return
+        self.log(f"media: listening on {self.opts.host_ip}:{self.opts.media_port}")
+        try:
             while not self._stop.is_set():
                 try:
-                    chunk = conn.recv(4096)
-                except socket.timeout:
-                    continue
+                    conn, peer = server.accept(timeout=300.0)
+                except Exception as exc:  # noqa: BLE001
+                    self.log(f"media: {exc}")
+                    return
+                self.log(f"media: guest connected from {peer}")
+                self._media_ready.set()
+                conn.settimeout(2.0)
+                buf = b""
+                frames = 0
+                while not self._stop.is_set():
+                    try:
+                        chunk = conn.recv(4096)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
+                    if not chunk:
+                        break
+                    buf += chunk
+                    while len(buf) >= 244:
+                        frame, buf = buf[:244], buf[244:]
+                        frames += 1
+                        payload = frame[:240]
+                        text = payload.decode("ascii", "replace")
+                        printable = sum(1 for c in text
+                                        if 32 <= ord(c) < 127 or c in "\r\n\t")
+                        if printable > len(text) * 0.5:
+                            self.log(f"media[{frames}] TEXT| {text!r}")
+                        else:
+                            self.log(f"media[{frames}] HEX | {payload[:64].hex(' ')}")
+                try:
+                    conn.close()
                 except OSError:
-                    break
-                if not chunk:
-                    break
-                buf += chunk
-                while len(buf) >= 244:
-                    frame, buf = buf[:244], buf[244:]
-                    frames += 1
-                    payload = frame[:240]
-                    text = payload.decode("ascii", "replace")
-                    printable = sum(1 for c in text if 32 <= ord(c) < 127 or c in "\r\n\t")
-                    if printable > len(text) * 0.5:
-                        self.log(f"media[{frames}] TEXT| {text!r}")
-                    else:
-                        self.log(f"media[{frames}] HEX | {payload[:64].hex(' ')}")
-            try:
-                conn.close()
-            except OSError:
-                pass
-            # the guest is gone - it may come back after a restart
-            self._media_ready.clear()
-            time.sleep(1.0)
+                    pass
+                # the guest is gone - it may come back after a restart
+                self._media_ready.clear()
+                time.sleep(0.5)
+        finally:
+            server.close()
+
+    def _warm_arp(self) -> None:
+        """Make sure the host can reach the guest's address.
+
+        The guest only got its address a moment ago, so the first connect
+        attempt cannot even send a SYN - the address is not resolved yet.
+        A connect that times out during that phase cancels the resolution
+        again, and the host never gets to talk to the guest at all.  One
+        throw-away UDP packet makes the host resolve the guest's MAC
+        address; the reply is handled by the kernel even when the guest's
+        firewall drops the packet itself.
+        """
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.5)
+        try:
+            s.sendto(b"\x00", (self.opts.guest_ip, 9))
+        except OSError:
+            pass
+        finally:
+            s.close()
+        time.sleep(1.0)
 
     def _control_worker(self) -> None:
         deadline = time.time() + 600
@@ -236,16 +268,31 @@ class HostDevice:
                 self.failed = "the guest never completed the serial handshake"
                 self.ready.set()
                 return
+            # The guest's address is a moment old - resolve it before the
+            # first connect attempt, otherwise that attempt burns the whole
+            # window on the address resolution and never sends a SYN.
+            self._warm_arp()
             sock = None
             deadline = time.time() + 120
+            complained = False
             while time.time() < deadline and not self._stop.is_set():
+                self.last_try = time.time()
                 try:
+                    # A connect that is abandoned half way leaves a dead
+                    # entry in the guest's accept queue, and the guest's
+                    # accept() then fails - it sends the boot frame on an
+                    # invalid descriptor and the device dies.  With the
+                    # address resolved the guest answers at once, so a short
+                    # timeout is safe here.
                     sock = socket.create_connection(
-                        (self.opts.guest_ip, AGENTD_CONTROL_PORT), timeout=1.0)
+                        (self.opts.guest_ip, AGENTD_CONTROL_PORT), timeout=2.0)
                     self.log(f"control: connected {self.opts.guest_ip}:{AGENTD_CONTROL_PORT}")
                     break
-                except OSError:
-                    time.sleep(0.2)
+                except OSError as exc:
+                    if not complained:
+                        self.log(f"control: {type(exc).__name__}: {exc}")
+                        complained = True
+                    time.sleep(0.1)
             if sock is None:
                 self.failed = "the guest never answered on the agentd control port"
                 self.ready.set()
@@ -321,6 +368,7 @@ class HostDevice:
         self.ready.clear()
         self.failed = ""
         self.events.clear()
+        self.last_try = 0.0
         self._serial_ready.clear()
         self._media_ready.clear()
 
