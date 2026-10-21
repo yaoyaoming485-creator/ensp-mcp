@@ -244,13 +244,20 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
         # on us must not be mistaken for a lab that was switched off.
         restarting = False
         for dev, drv in zip(lab.devices, devs):
-            if drv.ready.is_set() or not drv.failed:
+            if drv.ready.is_set():
                 continue
-            if attempts[drv.log_prefix] >= 3:
+            # A device that reports a failure, or that has made no progress
+            # for a while, is given another try: the machine is power-cycled
+            # and the drivers redo the handshake.
+            stale = drv.last_try and (time.time() - drv.last_try) > 45
+            if not drv.failed and not stale:
+                continue
+            if attempts[drv.log_prefix] >= 5:
                 continue
             attempts[drv.log_prefix] += 1
-            print(f"  {dev.name}: {drv.failed} - restarting the device "
-                  f"(attempt {attempts[drv.log_prefix]}/3)", flush=True)
+            reason = drv.failed or "no progress"
+            print(f"  {dev.name}: {reason} - restarting the device "
+                  f"(attempt {attempts[drv.log_prefix]}/5)", flush=True)
             drv.reset()
             try:
                 lab.restart_vm(dev)
