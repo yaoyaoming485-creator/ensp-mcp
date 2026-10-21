@@ -138,6 +138,12 @@ def cmd_lab_up(args) -> int:
     if args.with_vms:
         lab.create_vms()
     if args.patch:
+        # The image can only be rewritten while the machine is off - a
+        # running VM holds its disk and the clone fails with
+        # VBOX_E_INVALID_OBJECT_STATE.
+        if any(lab.needs_patch(d, lab.device_disk(d)) for d in lab.devices):
+            print("stopping the machines so their images can be rewritten ...")
+            lab.stop_vms()
         rc = cmd_lab_patch(argparse.Namespace(root=args.root))
         if rc != 0:
             print("aborting: the guest images could not be patched", file=sys.stderr)
