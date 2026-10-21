@@ -283,11 +283,40 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
 
     signal.signal(signal.SIGTERM, _term)
     signal.signal(signal.SIGINT, _term)
+    last_sweep = 0.0
     while not stop_flag["now"]:
         time.sleep(1.0)
         if all_gone():
             print("the devices are gone - the supervisor exits", flush=True)
             break
+        # A device that was up and is gone now is started again: the guest's
+        # VRP can crash and take the whole guest down with it, and a lab
+        # that silently loses a device is worse than one that restarts it.
+        now = time.time()
+        if now - last_sweep < 10.0:
+            continue
+        last_sweep = now
+        for dev, drv in zip(lab.devices, devs):
+            if not drv.ready.is_set():
+                continue
+            ports = agentd.probe_guest_ports(
+                dev.ip, (agentd.AGENTD_CONTROL_PORT,), timeout=0.3)
+            if ports.get(agentd.AGENTD_CONTROL_PORT):
+                continue
+            attempts[drv.log_prefix] += 1
+            if attempts[drv.log_prefix] > 5:
+                print(f"  {dev.name}: the device keeps disappearing - "
+                      f"giving up after {attempts[drv.log_prefix] - 1} restarts",
+                      flush=True)
+                drv.ready.clear()
+                continue
+            print(f"  {dev.name}: the device disappeared - restarting it "
+                  f"(attempt {attempts[drv.log_prefix]}/5)", flush=True)
+            drv.reset()
+            try:
+                lab.restart_vm(dev)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  {dev.name}: restart failed: {exc}", flush=True)
     for d in devs:
         d.stop()
     # do not leave a pid file behind: the next "lab up" must not think a
