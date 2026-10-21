@@ -235,6 +235,7 @@ $ enspctl lab down --root ./demo
 | `enspctl topo validate --spec s.json` | 校验 spec |
 | `enspctl lab create NAME --topo x.topo --root DIR` | 建 lab（加 `--with-vms` 克隆虚拟机） |
 | `enspctl lab up --root DIR` | 改写配置、启动并驱动整个 lab |
+| `enspctl lab up --root DIR --no-patch` | 启动时不再改写客机镜像 |
 | `enspctl lab down --root DIR` | 关闭设备 |
 | `enspctl lab status --root DIR` | 查看设备状态与是否应答 |
 | `enspctl lab patch --root DIR` | 改写每台设备的 `resource.cfg` |
@@ -255,6 +256,9 @@ lab 拥有一个目录：拓扑、每台设备一台 VirtualBox 虚拟机、以�
   —— VirtualBox 自建的管道只给宿主读权限；
 * 改写 `resource.cfg`，让 VRP 的接口 socket 指向 lab 实际下发的地址 ——
   不改的话 VRP 会以 `VPORT_Hal_PortEnable failed!` 挂掉。
+  改写结果会记在机器旁边，所以 `lab up` 不会每次都重做一遍（很慢的镜像往返），
+  镜像文件名也保持稳定，不会每跑一次就多叠一层 `-patched`；
+  改写失败时 `lab up` 直接中止，而不是拉起一台 socket 绑不上的 lab。
 
 然后 `lab up` 就像 eNSP 客户端那样驱动每个客机：串口握手、控制帧、media server。
 
