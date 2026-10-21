@@ -122,7 +122,7 @@ def _count_changes(out: str) -> int:
 def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 vboxmanage: str | None = None,
                 vm_name: str = "", storagectl: str = "IDE",
-                port: int = 0, device: int = 0) -> int:
+                port: int = 0, device: int = 0) -> tuple[int, Path]:
     """Patch ``resource.cfg`` inside a VDI image.
 
     VirtualBox cannot mount a VDI on a loop device, so the disk is converted
@@ -133,6 +133,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
     A leftover medium registration makes the next clone fail with
     E_INVALIDARG ("a hard disk with UUID ... already exists"), so the
     temporary copies are unregistered when the work is done.
+
+    Returns ``(changed socket lines, the disk that is now in place)``.
     """
     import shutil
     import tempfile
@@ -191,7 +193,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
         else:
             run(["closemedium", "disk", str(vdi), "--delete"], check=False)
             shutil.copyfile(patched, vdi)
-        return n
+            final = vdi
+        return n, final
     finally:
         run(["closemedium", "disk", str(raw)], check=False)
         shutil.rmtree(work, ignore_errors=True)

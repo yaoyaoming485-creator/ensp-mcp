@@ -270,11 +270,18 @@ class Lab:
 
         The disk that is actually attached to the machine wins: after a patch
         the lab directory can hold several images, and only one of them is the
-        one the guest boots from.
+        one the guest boots from.  A disk that does not live in this lab is
+        ignored - a machine with the same name may still be registered from
+        an earlier lab.
         """
         attached = self._attached_disk(dev)
         if attached is not None and attached.is_file():
-            return attached
+            try:
+                attached.relative_to(self.root)
+            except ValueError:
+                attached = None
+            else:
+                return attached
         folder = self.root / "vms" / dev.name
         if not folder.is_dir():
             return None
@@ -365,6 +372,26 @@ class Lab:
                     raise
                 print(f"  {dev.vm}: already locked by another process, skipped")
 
+    def restart_vm(self, dev: LabDevice) -> bool:
+        """Power-cycle one machine.
+
+        A guest that loses the control handshake aborts its agent and powers
+        itself off, so a restart is all it takes to give it another chance.
+        """
+        try:
+            if vbox.vm_state(dev.vm) == "running":
+                self._run(["controlvm", dev.vm, "poweroff"], timeout=120)
+                time.sleep(2)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self._run(["startvm", dev.vm, "--type", "headless"], timeout=300)
+        except LabError as exc:
+            if "lock" not in str(exc).lower():
+                raise
+            return False
+        return True
+
     def stop_vms(self) -> None:
         for dev in self.devices:
             try:
@@ -419,12 +446,30 @@ class Lab:
             "lab": self.name,
             "root": str(self.root),
             "subnet": self.subnet,
+            "supervisor": self.supervisor_state(),
             "devices": rows,
+        }
+
+    def supervisor_state(self) -> dict:
+        """Is a supervisor driving this lab, and is it healthy?"""
+        from . import supervise
+        root = self.root
+        pids = supervise.supervisor_pids(root)
+        alive = [p for p in pids if supervise.process_alive(p)]
+        return {
+            "running": bool(alive),
+            "pids": alive,
+            "log": str(supervise.log_file(root)),
         }
 
     def print_status(self) -> None:
         st = self.status()
         print(f"lab {st['lab']}  ({st['root']})")
+        sup = st.get("supervisor") or {}
+        if sup.get("running"):
+            print(f"supervisor: running (pid {', '.join(str(p) for p in sup['pids'])})")
+        else:
+            print("supervisor: not running")
         print(f"{'device':<10} {'vm':<22} {'ip':<16} {'state':<10} agentd  vrp")
         for r in st["devices"]:
             print(f"{r['device']:<10} {r['vm']:<22} {r['ip']:<16} {r['state']:<10} "

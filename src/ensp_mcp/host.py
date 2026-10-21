@@ -38,13 +38,26 @@ k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 k32.ReadFile.restype = ctypes.c_int
 k32.ReadFile.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
                          ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
+k32.PeekNamedPipe.restype = ctypes.c_int
+k32.PeekNamedPipe.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
+                              ctypes.POINTER(ctypes.c_uint32),
+                              ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
 k32.WriteFile.restype = ctypes.c_int
 k32.WriteFile.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32,
                           ctypes.POINTER(ctypes.c_uint32), ctypes.c_void_p]
 
+#: Windows errors that mean "the other end of the pipe is gone"
+_PIPE_GONE = (109, 232, 233)   # BROKEN_PIPE, NO_DATA, PIPE_NOT_CONNECTED
+
+
+class PipeClosed(RuntimeError):
+    """The guest closed the serial pipe."""
+
 
 @dataclass
 class HostOptions:
+    """Everything the host side needs to drive one guest."""
+
     guest_ip: str
     pipe_path: str
     media_port: int
@@ -62,6 +75,10 @@ class HostDevice:
     log_prefix: str = ""
     _threads: list[threading.Thread] = field(default_factory=list)
     _stop: threading.Event = field(default_factory=threading.Event)
+    #: set once the serial handshake is done and the guest listens
+    _serial_ready: threading.Event = field(default_factory=threading.Event)
+    #: set once the guest has connected to the media server
+    _media_ready: threading.Event = field(default_factory=threading.Event)
     events: list[str] = field(default_factory=list)
     ready: threading.Event = field(default_factory=threading.Event)
     failed: str = ""
@@ -73,12 +90,33 @@ class HostDevice:
 
     # ------------------------------------------------------------------ --
     def _read(self, handle, want: int, timeout: float) -> bytes:
+        """Read from the serial pipe without blocking.
+
+        ``ReadFile`` on a pipe blocks until data shows up, which would hide
+        the fact that the guest is gone: the pipe instance would stay
+        connected, and the next machine could not open the same pipe
+        (VERR_PIPE_BUSY).  Peeking first keeps the loop responsive and
+        tells us when the other end has closed.
+        """
         buf = ctypes.create_string_buffer(4096)
         cnt = ctypes.c_uint32(0)
+        avail = ctypes.c_uint32(0)
         out = b""
         deadline = time.time() + timeout
         while len(out) < want and time.time() < deadline:
-            if not k32.ReadFile(handle, buf, want - len(out), ctypes.byref(cnt), None):
+            if not k32.PeekNamedPipe(handle, None, 0, None,
+                                     ctypes.byref(avail), None):
+                if ctypes.get_last_error() in _PIPE_GONE:
+                    raise PipeClosed("the guest closed the serial pipe")
+                time.sleep(0.05)
+                continue
+            if not avail.value:
+                time.sleep(0.05)
+                continue
+            if not k32.ReadFile(handle, buf, min(want - len(out), avail.value),
+                                ctypes.byref(cnt), None):
+                if ctypes.get_last_error() in _PIPE_GONE:
+                    raise PipeClosed("the guest closed the serial pipe")
                 time.sleep(0.05)
                 continue
             if cnt.value:
@@ -92,8 +130,10 @@ class HostDevice:
 
     # ------------------------------------------------------------------ --
     def _serial_worker(self) -> None:
-        server = SerialPipeServer(self.opts.pipe_path)
         while not self._stop.is_set():
+            # a new server for every attempt: the guest that comes back after
+            # a restart opens the pipe again
+            server = SerialPipeServer(self.opts.pipe_path)
             try:
                 handle = server.wait_client(timeout=300.0)
             except Exception as exc:  # noqa: BLE001
@@ -112,6 +152,12 @@ class HostDevice:
                 self._write(handle, reply)
                 self.log(f"pipe: sent A+B (media_port={self.opts.media_port} "
                          f"ip={self.opts.guest_ip})")
+                # The guest only starts listening for the control connection
+                # after it has this handshake.  Connecting earlier leaves
+                # half-open connections behind that the guest later accepts
+                # and then cannot write to ("Send boot message to control
+                # socket failed: Bad file descriptor"), which kills the device.
+                self._serial_ready.set()
                 while not self._stop.is_set():
                     chunk = self._read(handle, 4096, timeout=1.0)
                     if chunk:
@@ -124,100 +170,133 @@ class HostDevice:
                 self.log(f"pipe: {type(exc).__name__}: {exc}")
             finally:
                 server.close()
+                self._serial_ready.clear()
+                time.sleep(1.0)
 
     def _media_worker(self) -> None:
-        server = MediaServer(self.opts.host_ip, self.opts.media_port)
-        try:
-            server.start()
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"media: {exc}")
-            return
-        self.log(f"media: listening on {self.opts.host_ip}:{self.opts.media_port}")
-        try:
-            conn, peer = server.accept(timeout=300.0)
-        except Exception as exc:  # noqa: BLE001
-            self.log(f"media: {exc}")
-            return
-        self.log(f"media: guest connected from {peer}")
-        conn.settimeout(2.0)
-        buf = b""
-        frames = 0
         while not self._stop.is_set():
+            server = MediaServer(self.opts.host_ip, self.opts.media_port)
             try:
-                chunk = conn.recv(4096)
-            except socket.timeout:
-                continue
+                server.start()
+                self.log(f"media: listening on {self.opts.host_ip}:{self.opts.media_port}")
+                conn, peer = server.accept(timeout=300.0)
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"media: {exc}")
+                return
+            finally:
+                server.close()
+            self.log(f"media: guest connected from {peer}")
+            self._media_ready.set()
+            conn.settimeout(2.0)
+            buf = b""
+            frames = 0
+            while not self._stop.is_set():
+                try:
+                    chunk = conn.recv(4096)
+                except socket.timeout:
+                    continue
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buf += chunk
+                while len(buf) >= 244:
+                    frame, buf = buf[:244], buf[244:]
+                    frames += 1
+                    payload = frame[:240]
+                    text = payload.decode("ascii", "replace")
+                    printable = sum(1 for c in text if 32 <= ord(c) < 127 or c in "\r\n\t")
+                    if printable > len(text) * 0.5:
+                        self.log(f"media[{frames}] TEXT| {text!r}")
+                    else:
+                        self.log(f"media[{frames}] HEX | {payload[:64].hex(' ')}")
+            try:
+                conn.close()
             except OSError:
-                break
-            if not chunk:
-                break
-            buf += chunk
-            while len(buf) >= 244:
-                frame, buf = buf[:244], buf[244:]
-                frames += 1
-                payload = frame[:240]
-                text = payload.decode("ascii", "replace")
-                printable = sum(1 for c in text if 32 <= ord(c) < 127 or c in "\r\n\t")
-                if printable > len(text) * 0.5:
-                    self.log(f"media[{frames}] TEXT| {text!r}")
-                else:
-                    self.log(f"media[{frames}] HEX | {payload[:64].hex(' ')}")
+                pass
+            # the guest is gone - it may come back after a restart
+            self._media_ready.clear()
+            time.sleep(1.0)
 
     def _control_worker(self) -> None:
         deadline = time.time() + 600
         sock = None
-        # The guest gives up quickly: agentd creates its control thread and
-        # then waits only a moment for the host to connect before it exits
-        # (and taking the whole guest down with it).  The retry interval is
-        # therefore short - a slow poll loses the race and the device dies
-        # right after the serial handshake.
-        while time.time() < deadline and not self._stop.is_set():
+        # The guest has to be dialled at the very moment it starts listening.
+        # It creates its control thread about three seconds after it has
+        # configured its address and gives up shortly after: when the host
+        # is late, or when an abandoned connect attempt is still queued and
+        # the guest accepts that dead connection, the guest aborts with
+        # "Send boot message to control socket failed" and powers itself
+        # off.  The supervisor restarts such a device, so this loop only
+        # has to wait for the next guest.
+        while not self._stop.is_set():
+            if not self._serial_ready.wait(300):
+                if self._stop.is_set():
+                    return
+                self.failed = "the guest never completed the serial handshake"
+                self.ready.set()
+                return
+            sock = None
+            deadline = time.time() + 120
+            while time.time() < deadline and not self._stop.is_set():
+                try:
+                    sock = socket.create_connection(
+                        (self.opts.guest_ip, AGENTD_CONTROL_PORT), timeout=1.0)
+                    self.log(f"control: connected {self.opts.guest_ip}:{AGENTD_CONTROL_PORT}")
+                    break
+                except OSError:
+                    time.sleep(0.2)
+            if sock is None:
+                self.failed = "the guest never answered on the agentd control port"
+                self.ready.set()
+                return
+            # The control channel is silent once the device is up: agentd only sends
+            # the boot/prepare/DEV0/DEV1/DEV2 frames and then waits.  A read timeout
+            # therefore means "nothing to say", *not* "the device is gone" - and it
+            # must not close the socket: agentd powers the guest off as soon as the
+            # control connection drops.
+            sock.settimeout(5.0)
+            buf = b""
             try:
-                sock = socket.create_connection(
-                    (self.opts.guest_ip, AGENTD_CONTROL_PORT), timeout=2)
-                self.log(f"control: connected {self.opts.guest_ip}:{AGENTD_CONTROL_PORT}")
-                break
-            except OSError:
-                time.sleep(0.2)
-        if sock is None:
-            self.failed = "the guest never answered on the agentd control port"
-            self.ready.set()
-            return
-        # The control channel is silent once the device is up: agentd only sends
-        # the boot/prepare/DEV0/DEV1/DEV2 frames and then waits.  A read timeout
-        # therefore means "nothing to say", *not* "the device is gone" - and it
-        # must not close the socket: agentd powers the guest off as soon as the
-        # control connection drops.
-        sock.settimeout(5.0)
-        buf = b""
-        try:
-            while not self._stop.is_set():
-                while len(buf) < 44:
-                    if self._stop.is_set():
-                        return
-                    try:
-                        chunk = sock.recv(44 - len(buf))
-                    except socket.timeout:
-                        continue
-                    if not chunk:
-                        self.log("control: peer closed")
+                while not self._stop.is_set():
+                    while len(buf) < 44:
+                        if self._stop.is_set():
+                            return
+                        try:
+                            chunk = sock.recv(44 - len(buf))
+                        except socket.timeout:
+                            continue
+                        if not chunk:
+                            self.log("control: peer closed")
+                            self.failed = "the guest closed the control connection"
+                            break
+                        buf += chunk
+                    if len(buf) < 44:
+                        break
+                    frame, buf = buf[:44], buf[44:]
+                    code = struct.unpack(">I", frame[0:4])[0]
+                    name = CONTROL_CODES.get(code, f"code {code}")
+                    self.events.append(name)
+                    self.log(f"control: <- {name}")
+                    if code == 0:
+                        sock.sendall(struct.pack(">I", 1) + frame[4:41] + b"\x00" * 3)
+                        self.log("control: -> 1 (go)")
+                    if code in (8, 9):
                         self.ready.set()
-                        return
-                    buf += chunk
-                frame, buf = buf[:44], buf[44:]
-                code = struct.unpack(">I", frame[0:4])[0]
-                name = CONTROL_CODES.get(code, f"code {code}")
-                self.events.append(name)
-                self.log(f"control: <- {name}")
-                if code == 0:
-                    sock.sendall(struct.pack(">I", 1) + frame[4:41] + b"\x00" * 3)
-                    self.log("control: -> 1 (go)")
-                if code in (8, 9):
-                    self.ready.set()
-        except OSError as exc:
-            self.log(f"control: {type(exc).__name__}: {exc}")
-            self.failed = str(exc)
-            self.ready.set()
+            except OSError as exc:
+                self.log(f"control: {type(exc).__name__}: {exc}")
+                # A failure is *not* a ready device: the supervisor restarts
+                # the machine, so "ready" must stay clear.
+                self.failed = str(exc)
+            finally:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
+                # the guest is gone - it may come back after a restart
+                self._serial_ready.clear()
+                self._media_ready.clear()
+                time.sleep(1.0)
 
     # ------------------------------------------------------------------ --
     def start(self, wait_ready: bool = True, ready_timeout: float = 240.0) -> "HostDevice":
@@ -231,6 +310,19 @@ class HostDevice:
 
     def stop(self) -> None:
         self._stop.set()
+
+    def reset(self) -> None:
+        """Get ready for another attempt.
+
+        A guest that loses the control handshake aborts and powers itself
+        off; when the machine is started again the drivers have to be ready
+        for the next handshake.
+        """
+        self.ready.clear()
+        self.failed = ""
+        self.events.clear()
+        self._serial_ready.clear()
+        self._media_ready.clear()
 
     @property
     def started(self) -> bool:

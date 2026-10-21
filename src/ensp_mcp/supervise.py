@@ -22,6 +22,7 @@ import sys
 import time
 from pathlib import Path
 
+from . import agentd
 from . import lab as labmod
 from .host import HostDevice, HostOptions
 
@@ -34,6 +35,57 @@ def log_file(root: Path) -> Path:
     return root / "enspctl-supervisor.log"
 
 
+def process_alive(pid: int) -> bool:
+    """Is ``pid`` a live process?
+
+    ``os.kill(pid, 0)`` cannot be used for this on Windows: CPython rejects
+    the signal with ``WinError 87`` (and other versions turn it into a
+    terminate), so the check would always answer "not running" - or worse,
+    kill the process it was asked about.
+    """
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                                 capture_output=True, text=True,
+                                 timeout=30).stdout
+        except (OSError, subprocess.SubprocessError):
+            return False
+        low = out.lower()
+        if "no tasks" in low or low.startswith("info:"):
+            return False
+        return str(pid) in out
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def supervisor_pids(root: Path) -> list[int]:
+    """Every process that runs the supervisor for ``root``.
+
+    The supervisor is started as a detached launcher that spawns the real
+    interpreter, and the two pids do not match, so the pid file alone is not
+    enough to find them all.
+    """
+    if os.name != "nt":
+        return []
+    script = (
+        "Get-CimInstance Win32_Process -Filter \"name='python.exe'\" | "
+        "Where-Object { $_.CommandLine -like '*ensp_mcp.supervise*' -and "
+        f"$_.CommandLine -like '*{root}*' }} | "
+        "ForEach-Object { $_.ProcessId }"
+    )
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-Command", script],
+                             capture_output=True, text=True, timeout=60).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return [int(x) for x in out.split() if x.strip().isdigit()]
+
+
 def is_running(root: Path) -> bool:
     pf = pid_file(root)
     if not pf.is_file():
@@ -42,11 +94,7 @@ def is_running(root: Path) -> bool:
         pid = int(pf.read_text(encoding="utf-8").strip())
     except (ValueError, OSError):
         return False
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    return process_alive(pid)
 
 
 def spawn(root: str | Path, verbose: bool = True) -> int:
@@ -99,25 +147,38 @@ if os.name == "nt":
 
 
 def stop(root: str | Path) -> int:
+    """Stop the supervisor (and every process that belongs to it)."""
     root = Path(root)
     pf = pid_file(root)
-    if not pf.is_file():
-        print("no supervisor recorded")
-        return 0
-    try:
-        pid = int(pf.read_text(encoding="utf-8").strip())
-    except (ValueError, OSError):
-        pf.unlink(missing_ok=True)
-        return 0
-    try:
-        os.kill(pid, signal.SIGTERM if os.name != "nt" else signal.SIGTERM)
-    except OSError:
-        pass
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
-                       capture_output=True, text=True)
+    pids: list[int] = []
+    if pf.is_file():
+        try:
+            pids.append(int(pf.read_text(encoding="utf-8").strip()))
+        except (ValueError, OSError):
+            pass
+    # the detached launcher and the interpreter it spawned are two processes
+    pids.extend(p for p in supervisor_pids(root) if p not in pids)
+    for pid in pids:
+        if not process_alive(pid):
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, text=True)
+    # a launcher that outlived its worker would keep the pipes open
+    time.sleep(0.5)
+    for pid in supervisor_pids(root):
+        if process_alive(pid):
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, text=True)
     pf.unlink(missing_ok=True)
-    print(f"supervisor {pid} stopped")
+    if pids:
+        print(f"supervisor {', '.join(str(p) for p in pids)} stopped")
+    else:
+        print("no supervisor recorded")
     return 0
 
 
@@ -136,8 +197,72 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
                     .start(wait_ready=False))
     print("drivers ready; starting machines", flush=True)
     lab.start_vms()
-    for d in devs:
-        d.ready.wait(300)
+
+    # A supervisor whose devices are gone has nothing left to drive: the
+    # guests power themselves off when the control socket closes, so a
+    # supervisor that keeps running would only leak processes and hold the
+    # named pipes.
+    state = {"seen_up": False, "gone_since": None}
+
+    def devices_up() -> int:
+        up = 0
+        for d in lab.devices:
+            ports = agentd.probe_guest_ports(
+                d.ip, (agentd.AGENTD_CONTROL_PORT,), timeout=0.3)
+            if ports.get(agentd.AGENTD_CONTROL_PORT):
+                up += 1
+        return up
+
+    def all_gone() -> bool:
+        """Have all the devices been gone for a while?"""
+        if devices_up():
+            state["seen_up"] = True
+            state["gone_since"] = None
+            return False
+        if not state["seen_up"]:
+            return False
+        if state["gone_since"] is None:
+            state["gone_since"] = time.time()
+            return False
+        return time.time() - state["gone_since"] > 60
+
+    # Wait for the devices, but keep an eye on them: a device that dies while
+    # the supervisor is still waiting for DEV2 must not strand it here.
+    #
+    # A guest that loses the control handshake aborts its agent and powers
+    # itself off, so such a device is simply given another try: the machine
+    # is power-cycled and the drivers redo the handshake.
+    attempts = {d.log_prefix: 0 for d in devs}
+    deadline = time.time() + 300
+    while time.time() < deadline:
+        if all(d.ready.is_set() for d in devs):
+            break
+        # A guest that lost the control handshake aborts its agent and powers
+        # itself off, so such a device is simply given another try: the
+        # machine is power-cycled and the drivers redo the handshake.  This
+        # comes before the "the devices are gone" check - a device that died
+        # on us must not be mistaken for a lab that was switched off.
+        restarting = False
+        for dev, drv in zip(lab.devices, devs):
+            if drv.ready.is_set() or not drv.failed:
+                continue
+            if attempts[drv.log_prefix] >= 3:
+                continue
+            attempts[drv.log_prefix] += 1
+            print(f"  {dev.name}: {drv.failed} - restarting the device "
+                  f"(attempt {attempts[drv.log_prefix]}/3)", flush=True)
+            drv.reset()
+            try:
+                lab.restart_vm(dev)
+            except Exception as exc:  # noqa: BLE001
+                print(f"  {dev.name}: restart failed: {exc}", flush=True)
+            restarting = True
+        if restarting:
+            time.sleep(2)
+            continue
+        if all_gone():
+            break
+        time.sleep(1.0)
     for d in devs:
         print(f"  {d.log_prefix.strip()} "
               f"{'started' if d.started else (d.failed or 'not started')}",
@@ -153,8 +278,18 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
     signal.signal(signal.SIGINT, _term)
     while not stop_flag["now"]:
         time.sleep(1.0)
+        if all_gone():
+            print("the devices are gone - the supervisor exits", flush=True)
+            break
     for d in devs:
         d.stop()
+    # do not leave a pid file behind: the next "lab up" must not think a
+    # supervisor is still running
+    try:
+        if pid_file(root).read_text(encoding="utf-8").strip() == str(os.getpid()):
+            pid_file(root).unlink(missing_ok=True)
+    except OSError:
+        pass
     print("supervisor exiting", flush=True)
     return 0
 

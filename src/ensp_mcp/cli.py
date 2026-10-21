@@ -98,13 +98,13 @@ def cmd_lab_patch(args) -> int:
                   f"dest {lab.host_ip} ({vdi.name})")
             continue
         try:
-            n = rescfg.rewrite_vdi(vdi, d.ip, lab.host_ip, vm_name=d.vm)
+            n, new_disk = rescfg.rewrite_vdi(vdi, d.ip, lab.host_ip, vm_name=d.vm)
         except rescfg.ResourceCfgError as exc:
             print(f"  {d.name}: FAILED {exc}")
             failed.append(d.name)
             continue
         total += n
-        lab.mark_patched(d, lab.device_disk(d) or vdi)
+        lab.mark_patched(d, new_disk)
         print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, dest {lab.host_ip}")
     print(f"patched {total} socket line(s)")
     if failed:
