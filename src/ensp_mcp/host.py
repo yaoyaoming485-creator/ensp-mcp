@@ -326,18 +326,27 @@ class HostDevice:
     def _announce_peers(self, conn: socket.socket) -> None:
         """Tell the guest which devices it is linked to.
 
-        The guest addresses a peer by its ssid, and it can only ARP for the
-        peer once it knows the peer's address: the announcement carries the
-        ssid at offset 178 of a 244-byte frame (the frame format the guest
-        itself uses) and the peer's address in the payload.
+        A frame the host sends to a guest is addressed to *that* guest: the
+        ssid at offset 178 selects the message queue the agent puts it into.
+        The peer is named in the payload, so the guest's VRP learns the
+        address it has to ARP for.
+
+        The exact layout is not known yet - the eNSP client builds the same
+        thing at runtime ("ExportCfg" in eNSP_VBoxServer.exe) - so this is
+        the best guess so far.  The guest ignores a frame it does not
+        understand, so sending it does no harm.
         """
+        own = self.opts.device_id
         for address, ssid in self.opts.peer_infos:
-            if not ssid:
+            if not ssid or not own:
                 continue
             frame = bytearray(MediaHub.FRAME_LENGTH)
+            # the payload names the peer: its ssid first, then its address
+            frame[0:len(ssid)] = ssid
             text = address.encode("ascii")
-            frame[0:len(text)] = text
-            frame[MediaHub.SSID_OFFSET:MediaHub.SSID_OFFSET + len(ssid)] = ssid
+            frame[len(ssid):len(ssid) + len(text)] = text
+            # ... and the frame itself is addressed to us
+            frame[MediaHub.SSID_OFFSET:MediaHub.SSID_OFFSET + len(own)] = own
             try:
                 conn.sendall(bytes(frame))
             except OSError as exc:
