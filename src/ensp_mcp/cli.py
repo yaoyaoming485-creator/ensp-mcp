@@ -6,9 +6,16 @@ Sub-commands::
     lab     create | up | down | status | destroy   manage a lab
     dev     list | exec | shell              talk to a device
     run     <device> <command>...             shorthand for dev exec
+    status                                   the eNSP / VirtualBox environment
+    models  [category]                       the device model catalogue
+    open    [topo]                           launch the eNSP application
+    handshake <guest-ip>                     run the agentd handshake by hand
 
 A *lab* is a directory that owns a topology plus one VirtualBox machine per
 device, and can be brought up without the eNSP application. See ``lab.py``.
+
+Device state is read as text over the guest's VRP console; the guest screen
+is never scraped. The screen tools of the MCP server stay diagnostic only.
 
 Examples::
 
@@ -28,7 +35,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import agentd, lab as labmod, topo, vbox
+from . import agentd, lab as labmod, models, topo, vbox
 
 
 def _print_json(data) -> None:
@@ -299,6 +306,92 @@ def cmd_run(args) -> int:
     return cmd_dev_exec(args)
 
 
+# -------------------------------------------------------- environment ------
+
+def cmd_status(args) -> int:
+    """Report whether eNSP and VirtualBox are present, and what is running."""
+    out: dict = {}
+    try:
+        out["vboxmanage"] = vbox.vboxmanage_path()
+    except vbox.VBoxError as exc:
+        out["vboxmanage"] = None
+        out["error"] = str(exc)
+    out["ensp_client"] = vbox.find_ensp_client()
+    out["ensp_version"] = vbox.find_ensp_version()
+    procs = vbox.ensp_processes()
+    out["ensp_running"] = bool(procs)
+    out["ensp_processes"] = procs
+    out["vbox_processes"] = sorted({p["name"] for p in vbox.vbox_processes()})
+    try:
+        vms = vbox.list_vms()
+        out["vm_total"] = len(vms)
+        out["devices_running"] = [
+            {"vm": v.name, "state": v.state} for v in vms if v.running
+        ]
+    except vbox.VBoxError as exc:
+        out["vm_total"] = None
+        out["error_vms"] = str(exc)
+    if args.json:
+        _print_json(out)
+        return 0
+    print(f"VBoxManage      : {out['vboxmanage']}")
+    print(f"eNSP client    : {out['ensp_client']}")
+    print(f"eNSP version   : {out['ensp_version']}")
+    print(f"eNSP running   : {out['ensp_running']}")
+    for p in out["ensp_processes"]:
+        print(f"  - {p['name']} (pid {p.get('pid')})")
+    print(f"VirtualBox     : {', '.join(out['vbox_processes']) or '-'}")
+    print(f"machines       : {out['vm_total']}")
+    for d in out["devices_running"]:
+        print(f"  - {d['vm']} ({d['state']})")
+    return 0
+
+
+def cmd_models(args) -> int:
+    """List the device models this tool can generate."""
+    rows = models.describe_all()
+    if args.category:
+        want = args.category.strip().lower()
+        rows = [r for r in rows if r["category"] == want]
+    if args.json:
+        _print_json({"count": len(rows), "models": rows})
+        return 0
+    print(f"{'model':<12} {'category':<10} {'ports':<6} image")
+    for r in rows:
+        need = "external" if r.get("needs_image") else "-"
+        print(f"{r['model']:<12} {r['category']:<10} "
+              f"{len(r.get('ports', [])):<6} {need}")
+    return 0
+
+
+def cmd_open(args) -> int:
+    """Launch the eNSP application, optionally with a topology."""
+    try:
+        info = vbox.launch_ensp(args.path or None, wait=args.wait)
+    except vbox.VBoxError as exc:
+        return _die(str(exc))
+    info["ok"] = True
+    if args.json:
+        _print_json(info)
+        return 0
+    print(f"eNSP started (pid {info.get('pid')}): {info.get('exe')}")
+    if info.get("path"):
+        print(f"opened: {info['path']}")
+    print("devices are not started by this call - select them and press start")
+    return 0
+
+
+def cmd_handshake(args) -> int:
+    """Run the guest agentd control handshake by hand."""
+    try:
+        result = agentd.control_handshake(args.guest_ip, timeout=args.timeout)
+    except agentd.AgentdError as exc:
+        return _die(str(exc))
+    result["ok"] = True
+    _print_json(result)
+    return 0
+
+
 # --------------------------------------------------------------- main ----
 
 def build_parser() -> argparse.ArgumentParser:
@@ -407,6 +500,29 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--wait", type=float, default=1.5)
     r.add_argument("--raw", action="store_true")
     r.set_defaults(func=cmd_run)
+
+    # ---- environment ----------------------------------------------------
+    st_ = sub.add_parser("status", help="the eNSP / VirtualBox environment")
+    st_.add_argument("--json", action="store_true")
+    st_.set_defaults(func=cmd_status)
+
+    mo = sub.add_parser("models", help="the device model catalogue")
+    mo.add_argument("category", nargs="?", default="",
+                    help="router | switch | firewall | wireless | endpoint")
+    mo.add_argument("--json", action="store_true")
+    mo.set_defaults(func=cmd_models)
+
+    op = sub.add_parser("open", help="launch the eNSP application")
+    op.add_argument("path", nargs="?", default="", help="topology file to open")
+    op.add_argument("--wait", type=float, default=0.0)
+    op.add_argument("--json", action="store_true")
+    op.set_defaults(func=cmd_open)
+
+    hs = sub.add_parser("handshake",
+                         help="run the agentd control handshake by hand")
+    hs.add_argument("guest_ip", help="the device's address, e.g. 192.168.56.2")
+    hs.add_argument("--timeout", type=float, default=10.0)
+    hs.set_defaults(func=cmd_handshake)
 
     return p
 

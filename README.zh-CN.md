@@ -244,6 +244,14 @@ $ enspctl lab down --root ./demo
 | `enspctl dev exec R1 "display version"` | 执行 VRP 命令，返回精确文本 |
 | `enspctl dev shell R1` | 交互式 VRP 会话 |
 | `enspctl run R1 "display version"` | `dev exec` 的简写 |
+| `enspctl status` | eNSP / VirtualBox 环境状态 |
+| `enspctl models [类别]` | 设备型号目录 |
+| `enspctl open [lab.topo]` | 启动 eNSP 图形界面 |
+| `enspctl handshake 192.168.56.2` | 手动跑一遍 agentd 控制握手 |
+
+至此 MCP 的全部能力都有命令行对应，**只剩客机屏幕那 4 个工具留在 MCP 侧**
+（`ensp_console_screen` / `_type` / `_key` / `_send_lines`）——屏幕是 guest 的 Linux
+控制台位图，**不能用来读设备状态**，所以不放进命令行。
 
 ### 一个 lab 做了什么
 

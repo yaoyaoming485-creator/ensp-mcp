@@ -257,6 +257,15 @@ $ enspctl lab down --root ./demo
 | `enspctl dev exec R1 "display version"` | run VRP commands, get the exact text |
 | `enspctl dev shell R1` | interactive VRP session |
 | `enspctl run R1 "display version"` | shorthand for `dev exec` |
+| `enspctl status` | the eNSP / VirtualBox environment |
+| `enspctl models [category]` | the device model catalogue |
+| `enspctl open [lab.topo]` | launch the eNSP application |
+| `enspctl handshake 192.168.56.2` | run the agentd control handshake by hand |
+
+That is the whole MCP surface except the guest-screen tools: `ensp_console_screen`,
+`ensp_console_type`, `ensp_console_key` and `ensp_console_send_lines` stay on the MCP
+server, because the screen is a bitmap of the guest's Linux console and must never be
+used to read device state.
 
 ### What a lab does
 
