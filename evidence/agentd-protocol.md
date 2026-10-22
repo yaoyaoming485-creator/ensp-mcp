@@ -206,6 +206,50 @@ Those 4 bytes are the same shape as the interface keepalives, so the
 configuration exchange is very likely the mechanism that hands the peer to
 the device.
 
+### ③d How the guest sets up its own network
+
+`do_static_config()` (`0x08049d93`) reads the 28-byte reply and applies it
+with `ioctl()` on the interface **`eth0`**:
+
+| ioctl | Number | What |
+| --- | --- | --- |
+| `SIOCSIFADDR` | `0x8916` | the address from `A[8:12]` ("Set IP address failed") |
+| `SIOCSIFNETMASK` | `0x891c` | the mask from `A[12:16]`, skipped when 0 ("Set IP netmask failed") |
+| `SIOCGIFFLAGS` / `SIOCSIFFLAGS` | `0x8914` / `0x8913` | "Bring network up failed" |
+
+So the address the host hands over in the handshake is the address the
+guest's VRP really owns — `resource.cfg`'s `local:` has to match it, which
+is why the rewrite changes both.
+
+### ③e The host side of the same protocol
+
+`eNSP_VBoxServer.exe` (the component the eNSP client drives) names the
+per-interface attributes it works with:
+
+```
+comport  sockoffset  systemmac  localip  localport  name  peerip  peerport
+```
+
+`peerip` + `peerport` are the *peer's* endpoint, `localip` + `localport`
+the device's own, and `sockoffset` the offset of the device's socket block.
+`CInterface::CreateInterfaces` binds **one socket per interface**, and
+`CInterface::CaptureData ip is :%s` shows it parsing the source address out
+of the captured data. That is the same model this project implements: the
+host owns the forwarding between the two devices' interfaces.
+
+### ③f Where it still breaks
+
+The VRP never ARPs for its peer, so only the 4-byte keepalives travel.
+The peer's address is in none of the places the guest reads at boot: not in
+`resource.cfg` (eNSP's own client leaves that file untouched — it keeps the
+stock `192.168.1.x` addresses), not in the handshake, not in `db.dat`. The
+eNSP client injects it at run time (`CAgentServer::ExportCfg`,
+`CAgentServer::SyncCfg`, `CAgentStaticCfgProcess::CfgService`), and that
+injection is the one piece still missing.
+
+The crash itself is in the VRP's main thread — `cap.log` in the guest
+holds the backtrace (`./dev1() [0x815903d]` … `__libc_start_main+0x133`).
+
 ### ④ Console — the router's own CLI
 
 The VRP process listens on **guest TCP 40000** and speaks plain text. On a
