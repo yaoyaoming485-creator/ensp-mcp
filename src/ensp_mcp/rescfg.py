@@ -23,6 +23,7 @@ Backends
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -64,9 +65,9 @@ def rewrite_text(text: str, guest_ip: str, host_ip: str,
 # ------------------------------------------------------------------ loop --
 
 _LOOP_SCRIPT = r"""#!/bin/bash
-# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip> [dest-port]
+# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip> <port-map-json>
 set -e
-RAW="$1"; GUEST="$2"; HOST="$3"; PORT="$4"
+RAW="$1"; GUEST="$2"; HOST="$3"; PORTS="$4"
 MNT=/mnt/enspctl-edit
 LOOP=$(losetup -j "$RAW" -O NAME --noheadings 2>/dev/null | head -1 | tr -d ' ')
 if [ -z "$LOOP" ]; then
@@ -81,13 +82,30 @@ if [ ! -f "$F" ]; then
   exit 3
 fi
 cp "$F" "$F.bak"
-sed -i "s/local:[0-9.]*:/local:${GUEST}:/g" "$F"
-if [ -n "$PORT" ]; then
-  sed -i "s/dest:[0-9.]*:[0-9]*/dest:${HOST}:${PORT}/g" "$F"
-else
-  sed -i "s/dest:[0-9.]*:/dest:${HOST}:/g" "$F"
-fi
-echo "patched $(grep -c 'local:' "$F") socket lines"
+python3 - "$F" "$GUEST" "$HOST" "$PORTS" <<'PYEOF'
+import json, re, sys
+
+path, guest, host, ports = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+pm = {int(k): int(v) for k, v in json.loads(ports).items()}
+text = open(path, encoding="utf-8", errors="replace").read()
+
+line_re = re.compile(r"(interface\[(\d+)\]\s*=\s*socket\[)([^\]]*)(\])")
+
+def fix(m):
+    idx = int(m.group(2))
+    body = m.group(3)
+    body = re.sub(r"local:[0-9.]+:", "local:%s:" % guest, body)
+    port = pm.get(idx)
+    if port is None:
+        body = re.sub(r"dest:[0-9.]+:\d+", "dest:%s:0" % host, body)
+    else:
+        body = re.sub(r"dest:[0-9.]+:\d+", "dest:%s:%d" % (host, port), body)
+    return m.group(1) + body + m.group(4)
+
+out = line_re.sub(fix, text)
+open(path, "w", encoding="utf-8", newline="").write(out)
+print("patched %d socket lines" % len(line_re.findall(text)))
+PYEOF
 umount "$MNT"
 losetup -d "$LOOP" 2>/dev/null || true
 """
@@ -95,6 +113,7 @@ losetup -d "$LOOP" 2>/dev/null || true
 
 def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
                           media_port: int | None = None,
+                          port_map: dict[int, int] | None = None,
                           wsl: bool = True) -> int:
     """Patch the file inside a raw image using WSL's loop device."""
     if not wsl:
@@ -117,9 +136,8 @@ def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
     script_wsl = to_wsl(str(script_win))
     image_wsl = to_wsl(image_win)
 
-    args = [script_wsl, image_wsl, guest_ip, host_ip]
-    if media_port is not None:
-        args.append(str(media_port))
+    args = [script_wsl, image_wsl, guest_ip, host_ip,
+            json.dumps({str(k): int(v) for k, v in (port_map or {}).items()})]
     proc = subprocess.run(
         ["wsl", "-u", "root", "-e", "bash"] + args,
         capture_output=True, text=True, errors="replace", timeout=900,
@@ -163,7 +181,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 vboxmanage: str | None = None,
                 vm_name: str = "", storagectl: str = "IDE",
                 port: int = 0, device: int = 0,
-                media_port: int | None = None) -> tuple[int, Path]:
+                media_port: int | None = None,
+                port_map: dict[int, int] | None = None) -> tuple[int, Path]:
     """Patch ``resource.cfg`` inside a VDI image.
 
     VirtualBox cannot mount a VDI on a loop device, so the disk is converted
@@ -201,7 +220,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
 
     try:
         run(["clonemedium", "disk", str(vdi), str(raw), "--format", "RAW"])
-        n = rewrite_in_raw_image(raw, guest_ip, host_ip, media_port=media_port)
+        n = rewrite_in_raw_image(raw, guest_ip, host_ip, media_port=media_port,
+                                 port_map=port_map)
         run(["clonemedium", "disk", str(raw), str(patched), "--format", "VDI"])
         if vm_name:
             # Move the patched disk next to the original (the temporary

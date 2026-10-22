@@ -100,19 +100,21 @@ def cmd_lab_patch(args) -> int:
             print(f"  {d.name}: no disk found, skipped")
             failed.append(d.name)
             continue
-        if not lab.needs_patch(d, vdi, dest_port=True):
+        ports = lab.interface_ports(d)
+        if not lab.needs_patch(d, vdi, dest_port=True, port_map=ports):
             print(f"  {d.name}: already patched -> local {d.ip}, "
                   f"dest {lab.host_ip} ({vdi.name})")
             continue
         try:
             n, new_disk = rescfg.rewrite_vdi(vdi, d.ip, lab.host_ip, vm_name=d.vm,
-                                              media_port=d.media_port)
+                                              media_port=d.media_port,
+                                              port_map=ports)
         except rescfg.ResourceCfgError as exc:
             print(f"  {d.name}: FAILED {exc}")
             failed.append(d.name)
             continue
         total += n
-        lab.mark_patched(d, new_disk, dest_port=True)
+        lab.mark_patched(d, new_disk, dest_port=True, port_map=ports)
         print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, dest {lab.host_ip}")
     print(f"patched {total} socket line(s)")
     if failed:
@@ -149,7 +151,8 @@ def cmd_lab_up(args) -> int:
         # The image can only be rewritten while the machine is off - a
         # running VM holds its disk and the clone fails with
         # VBOX_E_INVALID_OBJECT_STATE.
-        if any(lab.needs_patch(d, lab.device_disk(d), dest_port=True)
+        if any(lab.needs_patch(d, lab.device_disk(d), dest_port=True,
+                               port_map=lab.interface_ports(d))
                for d in lab.devices):
             print("stopping the machines so their images can be rewritten ...")
             lab.stop_vms()

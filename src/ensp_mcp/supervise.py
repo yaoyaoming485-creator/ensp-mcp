@@ -193,7 +193,7 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
         opts = HostOptions(
             guest_ip=d.ip, pipe_path=d.pipe, media_port=d.media_port,
             host_ip=lab.host_ip, device_id=d.device_id.encode("latin-1"),
-            verbose=verbose, peers=lab.peers(d), hub=hub,
+            verbose=verbose, peers=lab.relay_links(d), hub=hub,
             peer_ssids=[ssid.encode("latin-1") for _ip, _port, ssid in peer_links.values()],
             peer_infos=[(ip, ssid.encode("latin-1")) for ip, _port, ssid in peer_links.values()],
         )

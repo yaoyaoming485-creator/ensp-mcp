@@ -231,11 +231,25 @@ comport  sockoffset  systemmac  localip  localport  name  peerip  peerport
 ```
 
 `peerip` + `peerport` are the *peer's* endpoint, `localip` + `localport`
-the device's own, and `sockoffset` the offset of the device's socket block.
-`CInterface::CreateInterfaces` binds **one socket per interface**, and
-`CInterface::CaptureData ip is :%s` shows it parsing the source address out
-of the captured data. That is the same model this project implements: the
-host owns the forwarding between the two devices' interfaces.
+the device's own, and `sockoffset` the offset of the device's socket block:
+**one host port per (device, interface)**, so the peer can tell the
+interfaces of the sender apart. `CInterface::CreateInterfaces` binds
+**one socket per interface**, and `CInterface::CaptureData ip is :%s`
+(with the format `%u.%u.%u.%u`) shows it parsing the captured bytes as an
+address. `CInterface::ProcData` then does
+
+```c
+sendto(sock, buf, len, 0, interface->sockaddr_at_0x20, 16);
+```
+
+— the destination is the address the device asked for, the port comes from
+the host's own configuration.
+
+What the device actually sends is four bytes, once a second, per
+interface: `00 00 00 01` and `00 00 00 02` — it is asking the hub for
+something it does not know yet, and it keeps asking. The answer's exact
+layout is the one thing still missing; the address of the peer is the
+obvious candidate, and this implementation sends it.
 
 ### ③f Where it still breaks
 

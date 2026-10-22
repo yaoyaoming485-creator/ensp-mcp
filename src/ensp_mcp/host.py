@@ -118,78 +118,96 @@ class UdpRelay:
     socket per device is enough.
     """
 
-    def __init__(self, host_ip: str, port: int,
-                 peers: dict[int, tuple[str, int]], log_prefix: str = ""):
+    def __init__(self, host_ip: str, links: dict[int, tuple[int, str, int]],
+                 log_prefix: str = ""):
         self.host_ip = host_ip
-        self.port = port
-        self.peers = peers
+        #: interface -> (host port, peer address, peer local port)
+        self.links = links
         self.log_prefix = log_prefix
-        self.sock: socket.socket | None = None
+        self.socks: dict[int, socket.socket] = {}
         self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
+        self._threads: list[threading.Thread] = []
         self.forwarded = 0
         self.received = 0
+        self.answered = 0
 
     def log(self, msg: str) -> None:
         if self.log_prefix:
             print(f"[{time.strftime('%H:%M:%S')}] {self.log_prefix}{msg}", flush=True)
 
     def start(self) -> None:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            s.bind((self.host_ip, self.port))
-        except OSError as exc:
-            s.close()
-            self.log(f"udp relay: cannot bind {self.host_ip}:{self.port}: {exc}")
-            return
-        self.sock = s
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        self.log(f"udp relay: listening on {self.host_ip}:{self.port} "
-                 f"for {len(self.peers)} interface(s)")
-
-    def _run(self) -> None:
-        assert self.sock is not None
-        last_report = time.time()
-        while not self._stop.is_set():
-            self.sock.settimeout(1.0)
+        for iface, (port, _peer_ip, _peer_port) in self.links.items():
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                data, peer = self.sock.recvfrom(65535)
+                s.bind((self.host_ip, port))
+            except OSError as exc:
+                self.log(f"udp relay: cannot bind {self.host_ip}:{port}: {exc}")
+                s.close()
+                continue
+            self.socks[iface] = s
+            t = threading.Thread(target=self._run, args=(iface,), daemon=True)
+            t.start()
+            self._threads.append(t)
+        if self.socks:
+            ports = ", ".join(str(p) for p, _, _ in self.links.values())
+            self.log(f"udp relay: {len(self.socks)} interface socket(s) on "
+                     f"{self.host_ip}:{ports}")
+
+    def _run(self, iface: int) -> None:
+        s = self.socks[iface]
+        _port, peer_ip, peer_port = self.links[iface]
+        while not self._stop.is_set():
+            s.settimeout(1.0)
+            try:
+                data, peer = s.recvfrom(65535)
             except socket.timeout:
-                if time.time() - last_report > 30:
-                    last_report = time.time()
-                    self.log(f"udp relay: {self.received} datagram(s) in, "
-                             f"{self.forwarded} forwarded")
                 continue
             except OSError:
                 break
             self.received += 1
-            try:
-                source_port = int(peer[1])
-            except (TypeError, ValueError):
+            # A four byte packet is an address: the device asks "where is my
+            # peer?" with 0.0.0.1, and the host answers with the peer's
+            # address (that is what the eNSP host does - it parses the
+            # captured bytes as an IP with "%u.%u.%u.%u").  Without the
+            # answer the interface never comes up and the device dies a
+            # couple of minutes later.
+            if len(data) == 4:
+                # The device asks once a second: four bytes that the eNSP host
+                # parses as an address ("%u.%u.%u.%u").  It sends 0.0.0.1 and
+                # 0.0.0.2 - it does not know its peer yet, so the host has to
+                # tell it.  The exact answer layout is still unknown, so the
+                # peer's address is sent (the device keeps asking until one
+                # of the forms fits) and the request is also passed on, so
+                # the peer's own reply can come back.
+                try:
+                    s.sendto(socket.inet_aton(peer_ip), peer)
+                    self.answered += 1
+                except OSError as exc:
+                    self.log(f"udp relay: cannot answer interface {iface}: {exc}")
+                try:
+                    s.sendto(data, (peer_ip, peer_port))
+                    self.forwarded += 1
+                except OSError:
+                    pass
                 continue
-            iface = source_port - LOCAL_PORT_BASE
-            target = self.peers.get(iface)
-            if target is None:
-                if self.received == 1:
-                    self.log(f"udp relay: no peer for interface {iface} "
-                             f"(source {peer[0]}:{source_port})")
-                continue
             try:
-                self.sock.sendto(data, target)
+                # the source port stays the one the guest addressed: that is
+                # how the peer knows which interface the packet belongs to
+                s.sendto(data, (peer_ip, peer_port))
                 self.forwarded += 1
             except OSError as exc:
-                self.log(f"udp relay: cannot forward to {target}: {exc}")
+                self.log(f"udp relay: cannot forward interface {iface} "
+                         f"to {peer_ip}:{peer_port}: {exc}")
 
     def stop(self) -> None:
         self._stop.set()
-        if self.sock is not None:
+        for s in self.socks.values():
             try:
-                self.sock.close()
+                s.close()
             except OSError:
                 pass
-            self.sock = None
+        self.socks.clear()
 
 
 @dataclass
@@ -203,8 +221,8 @@ class HostOptions:
     netmask: str = "255.255.255.0"
     device_id: bytes = b"4CA76BCE-449E-4dc0-B3E3-E86C85B97001\x00"
     verbose: bool = True
-    #: interface index -> (peer address, peer local port) for the UDP relay
-    peers: dict[int, tuple[str, int]] = field(default_factory=dict)
+    #: interface -> (host port, peer address, peer local port) for the UDP relay
+    peers: dict[int, tuple[int, str, int]] = field(default_factory=dict)
     #: the ssids of the linked devices - the guest needs them to address them
     peer_ssids: list[bytes] = field(default_factory=list)
     #: (address, ssid) of the linked devices, for the announcement frame
@@ -536,8 +554,8 @@ class HostDevice:
 
     # ------------------------------------------------------------------ --
     def start(self, wait_ready: bool = True, ready_timeout: float = 240.0) -> "HostDevice":
-        self.relay = UdpRelay(self.opts.host_ip, self.opts.media_port,
-                              self.opts.peers, self.log_prefix)
+        self.relay = UdpRelay(self.opts.host_ip, self.opts.peers,
+                              self.log_prefix)
         self.relay.start()
         for fn in (self._serial_worker, self._media_worker, self._control_worker):
             t = threading.Thread(target=fn, daemon=True)

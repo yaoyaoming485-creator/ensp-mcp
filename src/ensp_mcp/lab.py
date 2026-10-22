@@ -43,6 +43,10 @@ DEFAULT_MEDIA_PORT = 20002
 DEFAULT_PIPE_PREFIX = "enspctl"
 #: the guest's own ports: interface n sends its traffic from 10000 + n
 LOCAL_PORT_BASE = 10000
+#: the host port a device's interface n sends to: one port per
+#: (device, interface), so the peer can tell the interfaces apart
+INTERFACE_PORT_BASE = 30000
+INTERFACES_PER_DEVICE = 16
 
 # eNSP's own AR device image, used as the base disk for new device VMs.
 # The install keeps a base disk plus a *difference* disk; the difference disk
@@ -176,6 +180,32 @@ class Lab:
             except LabError:
                 continue
             out[int(mine)] = (peer.ip, LOCAL_PORT_BASE + int(theirs), peer.device_id)
+        return out
+
+    def device_index(self, dev: LabDevice) -> int:
+        for i, d in enumerate(self.devices):
+            if d.name == dev.name:
+                return i
+        return 0
+
+    def interface_ports(self, dev: LabDevice) -> dict[int, int]:
+        """The host port each of the device's interfaces sends to.
+
+        One port per (device, interface): the peer's VRP has to be able to
+        tell the interfaces of the sender apart, and the eNSP host gives
+        every device its own block of ports ("sockoffset").
+        """
+        base = INTERFACE_PORT_BASE + self.device_index(dev) * INTERFACES_PER_DEVICE
+        return {n: base + n for n in range(INTERFACES_PER_DEVICE)}
+
+    def relay_links(self, dev: LabDevice) -> dict[int, tuple[int, str, int]]:
+        """What the relay needs: interface -> (host port, peer, peer port)."""
+        ports = self.interface_ports(dev)
+        peers = self.peer_links(dev)
+        out: dict[int, tuple[int, str, int]] = {}
+        for iface, (peer_ip, peer_port, _ssid) in peers.items():
+            out[iface] = (ports.get(iface, INTERFACE_PORT_BASE + iface),
+                          peer_ip, peer_port)
         return out
 
     # ------------------------------------------------------------- create --
@@ -359,7 +389,8 @@ class Lab:
         return self.root / "vms" / dev.name / ".enspctl-patched.json"
 
     def needs_patch(self, dev: LabDevice, disk: Path | None,
-                    dest_port: bool = True) -> bool:
+                    dest_port: bool = True,
+                    port_map: dict[int, int] | None = None) -> bool:
         """Does this device's ``resource.cfg`` still point at the old addresses?
 
         Rewriting the image is expensive (a VDI -> raw -> VDI round trip), so
@@ -380,13 +411,17 @@ class Lab:
             return True
         if bool(state.get("dest_port")) != bool(dest_port):
             return True
+        if port_map is not None:
+            if state.get("ports") != {str(k): v for k, v in port_map.items()}:
+                return True
         return not (state.get("ip") == dev.ip
                     and state.get("host") == self.host_ip
                     and state.get("disk") == disk.name
                     and state.get("size") == size)
 
     def mark_patched(self, dev: LabDevice, disk: Path,
-                     dest_port: bool = True) -> None:
+                     dest_port: bool = True,
+                     port_map: dict[int, int] | None = None) -> None:
         marker = self.patch_marker(dev)
         marker.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -397,6 +432,7 @@ class Lab:
             "ip": dev.ip, "host": self.host_ip,
             "disk": disk.name, "size": size,
             "dest_port": bool(dest_port),
+            "ports": {str(k): v for k, v in (port_map or {}).items()},
         }, indent=2), encoding="utf-8")
 
     def destroy_vms(self) -> None:
