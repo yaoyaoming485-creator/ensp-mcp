@@ -69,10 +69,18 @@ Layout of the 28 + 27 byte reply:
 | --- | --- | --- |
 | `A[0:4]` | 4 | challenge, echoed verbatim |
 | `A[4:6]` | 2 | media port — **network byte order** (`ntohs` is applied) |
+| `A[6:8]` | 2 | **padding — the guest never reads it** |
 | `A[8:12]` | 4 | guest IP (`sockaddr_in.sin_addr`) |
 | `A[12:16]` | 4 | netmask (0 ⇒ skip `SIOCSIFNETMASK`) |
 | `A[16:26]` | 10 | device id, first 10 bytes |
+| `A[26:28]` | 2 | **padding — the guest never reads it** |
 | `B[0:27]` | 27 | device id, last 27 bytes (37 total = the ssid) |
+
+The two padding gaps were confirmed in `do_static_config()`: the parser
+jumps from `A+4` (the media port) straight to `A+8` (the IP) and from
+`A+0x10` (the device id) to the end of the 28 bytes. **The handshake
+carries no peer information at all** — the guest's address, the media port
+and its own id are all it learns.
 
 The guest then configures its own network:
 
