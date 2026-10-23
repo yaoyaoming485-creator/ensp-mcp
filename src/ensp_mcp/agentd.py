@@ -62,6 +62,25 @@ VRP_CONSOLE_PORT = 40000
 DEFAULT_MEDIA_PORT = 20002
 DEFAULT_DEVICE_ID = b"4CA76BCE-449E-4dc0-B3E3-E86C85B97001\x00"
 
+
+def split_endpoint(text: str, default_port: int) -> tuple[str, int]:
+    """Split ``"host"`` or ``"host:port"`` into ``(host, port)``.
+
+    The host side of a guest service is not always the guest's own address:
+    behind VirtualBox's NAT the host reaches the guest through a forwarded
+    port on the loopback, so the endpoint is ``"127.0.0.1:40001"`` while the
+    guest still listens on 40000.
+    """
+    text = text.strip()
+    if ":" in text:
+        host, _, port = text.rpartition(":")
+        try:
+            return host, int(port)
+        except ValueError as exc:
+            raise AgentdError(f"bad endpoint {text!r}: {exc}") from exc
+    return text, default_port
+
+
 CONTROL_CODES = {
     0: "boot",
     2: "prepare OK",
@@ -319,8 +338,7 @@ class VrpConsole:
     def __init__(self, guest_ip: str, port: int = VRP_CONSOLE_PORT,
                  timeout: float = 5.0, connect_retries: int = 4,
                  retry_delay: float = 1.5):
-        self.guest_ip = guest_ip
-        self.port = port
+        self.guest_ip, self.port = split_endpoint(guest_ip, port)
         self.timeout = timeout
         self.connect_retries = connect_retries
         self.retry_delay = retry_delay
@@ -525,6 +543,19 @@ def probe_guest_ports(guest_ip: str, ports: tuple[int, ...] = (AGENTD_CONTROL_PO
     return out
 
 
+def probe_endpoint(endpoint: str, timeout: float = 0.4) -> bool:
+    """Does the service behind ``endpoint`` (``"host"`` or ``"host:port"``) answer?"""
+    host, port = split_endpoint(endpoint, VRP_CONSOLE_PORT)
+    s = socket.socket()
+    s.settimeout(timeout)
+    try:
+        return s.connect_ex((host, port)) == 0
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 def guest_ip_from_host_only(prefix: str = "192.168.56.",
                             ports: tuple[int, ...] = (AGENTD_CONTROL_PORT,
                                                       VRP_CONSOLE_PORT),
@@ -551,6 +582,46 @@ def guest_ip_from_host_only(prefix: str = "192.168.56.",
     return found
 
 
+#: how many devices a NAT lab may have: the console of device *n* is
+#: forwarded to 40000 + n on the loopback
+NAT_DEVICE_COUNT = 16
+
+
+def nat_endpoints(count: int = NAT_DEVICE_COUNT,
+                  timeout: float = 0.12) -> list[str]:
+    """The loopback endpoints of the guests that are behind NAT.
+
+    A NAT lab forwards the console of device *n* to ``127.0.0.1:40000 + n``;
+    the endpoints are returned as ``"host:port"`` because that is what the
+    console and the control channel need.
+    """
+    out: list[str] = []
+    for i in range(count):
+        host, port = "127.0.0.1", VRP_CONSOLE_PORT + i
+        s = socket.socket()
+        s.settimeout(timeout)
+        try:
+            if s.connect_ex((host, port)) == 0:
+                out.append(f"{host}:{port}")
+        except OSError:
+            pass
+        finally:
+            s.close()
+    return out
+
+
+def guest_endpoints(prefix: str = "192.168.56.",
+                    timeout: float = 0.12) -> list[str]:
+    """Every guest that can be reached, as ``"host"`` or ``"host:port"``.
+
+    Host-only guests are addressed by their own address; guests behind NAT
+    are addressed through a forwarded port on the loopback.
+    """
+    out = list(guest_ip_from_host_only(prefix, timeout=timeout))
+    out.extend(nat_endpoints(timeout=timeout))
+    return out
+
+
 def control_handshake(guest_ip: str, device_id: bytes = DEFAULT_DEVICE_ID,
                       timeout: float = 30.0) -> dict:
     """Perform the 44-byte control exchange and report what the guest said.
@@ -558,11 +629,15 @@ def control_handshake(guest_ip: str, device_id: bytes = DEFAULT_DEVICE_ID,
     The guest listens on 56789 and sends code 0 (boot) as soon as we connect.
     Answering with code 1 releases the start state; the guest then reports
     prepare / DEV0 / DEV1 / DEV2.
+
+    ``guest_ip`` may carry a port ("host:port"): behind NAT the control
+    channel is a forwarded port on the loopback.
     """
+    host, port = split_endpoint(guest_ip, AGENTD_CONTROL_PORT)
     sock = socket.socket()
     sock.settimeout(timeout)
     try:
-        sock.connect((guest_ip, AGENTD_CONTROL_PORT))
+        sock.connect((host, port))
     except socket.timeout as exc:
         raise AgentdError(
             f"control connect to {guest_ip} timed out - another client (the "

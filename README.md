@@ -293,6 +293,47 @@ handshake, the control frames, and the media server.
 > they do not appear in the eNSP canvas. `enspctl` is a parallel, scriptable
 > path to the same devices.
 
+### NAT mode, for when the host-only adapter is broken
+
+A host-only NIC in VirtualBox needs an NDIS filter. Once that filter stops
+working, **every machine with a host-only NIC refuses to start**:
+
+```
+VBoxManage.exe: error: Failed to open/create the internal network
+'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter'
+(VERR_INTNET_FLT_IF_NOT_FOUND)
+```
+
+`enspctl lab create ... --nic nat` puts the devices on VirtualBox's NAT
+instead. Every service the host needs — the VRP console, the agentd control
+channel and the per-interface traffic ports — is forwarded with `--natpf1` to a
+port on the loopback, the guest's view of the host becomes the NAT gateway
+alias `10.0.2.2`, and `resource.cfg`'s `dest:` is rewritten to match.
+
+```console
+$ enspctl lab create mux --topo lab.topo --root ./mux --nic nat \
+      --subnet 10.0.2 --start-ip 101
+$ enspctl lab up --root ./mux
+  R1: 9 socket line(s) -> local 10.0.2.101, dest 10.0.2.2
+  ...
+  R1: started
+$ enspctl run R1 "display version" --root ./mux
+```
+
+The price: the guest **hard-codes** `192.168.56.1` (the host address of the
+media server and of the interface traffic), so the media channel does not work
+behind NAT. The devices boot, stay up and answer on the text console, but the
+layer-2 traffic between two devices still does not come up.
+
+### Pushing a whole configuration
+
+```console
+$ enspctl run SW1 --file examples/mux-vlan/mux-vlan-sw1.cfg --root ./mux
+```
+
+`--file` takes one command per line; blank lines and lines starting with `#`
+are skipped.
+
 ### Launch it from the project's own venv, not from `uvx`
 
 `uvx --from <dir> <entrypoint>` looks like the obvious way to run this, and it

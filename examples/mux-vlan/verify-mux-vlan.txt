@@ -1,0 +1,18 @@
+# 实验（训）9 MUX-VLAN：验证命令（交换机 SW1）
+#
+# 下发方式：
+#   enspctl run SW1 --file examples/mux-vlan/verify-mux-vlan.txt --root <lab 目录>
+#
+# 每条命令都会校验回显，没被执行会直接报错。
+
+# 1) MUX-VLAN 总表：主/从 VLAN、类型、成员接口
+display mux-vlan
+
+# 2) VLAN 表：确认 VLAN10/20/30/100 都已创建
+display vlan
+
+# 3) 各接口的 VLAN 归属与 MUX-VLAN 使能状态
+display port vlan
+
+# 4) 主 VLAN 的网关地址
+display interface Vlanif100

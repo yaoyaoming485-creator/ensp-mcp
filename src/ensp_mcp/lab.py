@@ -40,6 +40,19 @@ DEFAULT_SUBNET = "192.168.56"
 DEFAULT_HOST_IP = "192.168.56.1"
 DEFAULT_BASE_IP = 101
 DEFAULT_MEDIA_PORT = 20002
+
+#: NAT mode.  The guest sits behind VirtualBox's NAT engine, the host reaches
+#: it through forwarded ports on the loopback, and the guest's view of the
+#: host is the NAT gateway alias.
+#:
+#: NAT mode exists because the host-only adapter needs a working VirtualBox
+#: NDIS filter: without it VirtualBox refuses to start a machine with
+#: "Failed to open/create the internal network ... (VERR_INTNET_FLT_IF_NOT_FOUND)".
+#: NAT needs no filter, so it works on a host where the filter is broken.
+NAT_GATEWAY_IP = "10.0.2.2"
+NAT_HOST_IP = "127.0.0.1"
+NAT_SUBNET = "10.0.2"
+NAT_BASE_IP = 101
 DEFAULT_PIPE_PREFIX = "enspctl"
 #: the guest's own ports: interface n sends its traffic from 10000 + n
 LOCAL_PORT_BASE = 10000
@@ -91,6 +104,11 @@ class LabDevice:
     media_port: int
     device_id: str
     com_port: int = 0
+    #: host side port of the forwarded VRP console (NAT mode); 0 = the
+    #: guest's own address and port are used
+    console_port: int = 0
+    #: host side port of the forwarded agentd control channel (NAT mode)
+    agent_port: int = 0
 
 
 @dataclass
@@ -101,8 +119,58 @@ class Lab:
     devices: list[LabDevice] = field(default_factory=list)
     subnet: str = DEFAULT_SUBNET
     host_ip: str = DEFAULT_HOST_IP
+    #: how the guests are attached to the host: "hostonly" or "nat"
+    nic_mode: str = "hostonly"
     #: the topology's links: {"a": name, "b": name, "a_port": int, "b_port": int}
     links: list[dict] = field(default_factory=list)
+
+    @property
+    def nat(self) -> bool:
+        return self.nic_mode == "nat"
+
+    @property
+    def guest_host_ip(self) -> str:
+        """The address the *guest* uses to reach the host.
+
+        With a host-only NIC that is the host itself; behind NAT the guest
+        only knows the NAT gateway alias.
+        """
+        return NAT_GATEWAY_IP if self.nat else self.host_ip
+
+    @property
+    def bind_host(self) -> str:
+        """The address the host binds its sockets to."""
+        return "0.0.0.0" if self.nat else self.host_ip
+
+    def host_side_addr(self, guest_ip: str) -> str:
+        """The address the host uses to reach a guest."""
+        return NAT_HOST_IP if self.nat else guest_ip
+
+    def console_endpoint(self, dev: LabDevice) -> str:
+        """``host:port`` of the device's VRP console, as the host sees it."""
+        if self.nat:
+            port = dev.console_port or (40000 + self.device_index(dev))
+            return f"{NAT_HOST_IP}:{port}"
+        return f"{dev.ip}:40000"
+
+    def agent_endpoint(self, dev: LabDevice) -> str:
+        """``host:port`` of the device's agentd control channel."""
+        if self.nat:
+            port = dev.agent_port or (56789 + self.device_index(dev))
+            return f"{NAT_HOST_IP}:{port}"
+        return f"{dev.ip}:56789"
+
+    def local_endpoint(self, dev: LabDevice, iface: int) -> tuple[str, int]:
+        """Where the host delivers the traffic of ``dev``'s interface.
+
+        The guest sends the traffic of interface *n* from its local port
+        ``10000 + n``; the host has to hand it to the peer device on the
+        matching local port.
+        """
+        if self.nat:
+            block = self.device_index(dev) * INTERFACES_PER_DEVICE
+            return NAT_HOST_IP, LOCAL_PORT_BASE + block + iface
+        return dev.ip, LOCAL_PORT_BASE + iface
 
     # ------------------------------------------------------------------ io --
     @property
@@ -115,6 +183,7 @@ class Lab:
             "name": self.name,
             "subnet": self.subnet,
             "host_ip": self.host_ip,
+            "nic_mode": self.nic_mode,
             "topo": self.topo_path.name,
             "devices": [asdict(d) for d in self.devices],
             "links": self.links,
@@ -137,6 +206,7 @@ class Lab:
             devices=devs,
             subnet=data.get("subnet", DEFAULT_SUBNET),
             host_ip=data.get("host_ip", DEFAULT_HOST_IP),
+            nic_mode=data.get("nic_mode", "hostonly"),
             links=list(data.get("links", [])),
         )
 
@@ -179,7 +249,8 @@ class Lab:
                 peer = self.device(other)
             except LabError:
                 continue
-            out[int(mine)] = (peer.ip, LOCAL_PORT_BASE + int(theirs), peer.device_id)
+            addr, port = self.local_endpoint(peer, int(theirs))
+            out[int(mine)] = (addr, port, peer.device_id)
         return out
 
     def device_index(self, dev: LabDevice) -> int:
@@ -214,7 +285,8 @@ class Lab:
                subnet: str = DEFAULT_SUBNET,
                host_ip: str = DEFAULT_HOST_IP,
                start_ip: int = DEFAULT_BASE_IP,
-               media_port: int = DEFAULT_MEDIA_PORT) -> "Lab":
+               media_port: int = DEFAULT_MEDIA_PORT,
+               nic_mode: str = "hostonly") -> "Lab":
         """Create a lab from an existing .topo file."""
         root = Path(root)
         if (root / "lab.json").exists():
@@ -234,7 +306,7 @@ class Lab:
                 f"has_bom={parsed.get('has_bom')}) - rewrite it as UTF-8 without BOM")
 
         lab = cls(name=name, root=root, topo_path=topo_dst,
-                  subnet=subnet, host_ip=host_ip)
+                  subnet=subnet, host_ip=host_ip, nic_mode=nic_mode)
         for link in parsed.get("links", []):
             lab.links.append({
                 "a": link.get("a"), "b": link.get("b"),
@@ -257,15 +329,21 @@ class Lab:
                 media_port=media_port + i,
                 device_id=uuid + "\x00",
                 com_port=dev.get("com_port", 0),
+                console_port=(40000 + i) if nic_mode == "nat" else 0,
+                agent_port=(56789 + i) if nic_mode == "nat" else 0,
             ))
         lab.save()
         return lab
 
     # ------------------------------------------------------------- vms ----
+    def _registered_vms(self) -> set[str]:
+        """The names VirtualBox currently knows about."""
+        out = self._run(["list", "vms"], timeout=120)
+        return set(re.findall(r'^"(.+?)"', out, re.M))
+
     def base_machine(self) -> str:
         """The VirtualBox machine to clone device VMs from."""
-        out = self._run(["list", "vms"], timeout=120)
-        registered = set(re.findall(r'^"(.+?)"', out, re.M))
+        registered = self._registered_vms()
         for cand in AR_MACHINE_CANDIDATES:
             if cand in registered:
                 return cand
@@ -299,11 +377,17 @@ class Lab:
 
     def create_vms(self) -> None:
         """Clone one VM per device out of eNSP's base machine."""
+        # Only the *missing* VMs need the base machine. The base is eNSP's own
+        # registration and eNSP's client re-registers its machines on start, so
+        # it can be gone while every VM of this lab is already present - that
+        # must not stop an existing lab from starting.
+        registered = self._registered_vms()
+        missing = [d for d in self.devices if d.vm not in registered]
+        if not missing:
+            print("  all device VMs already exist, skipped")
+            return
         base = self.base_machine()
-        for dev in self.devices:
-            if self.vm_exists(dev):
-                print(f"  {dev.vm}: already exists, skipped")
-                continue
+        for dev in missing:
             folder = self.root / "vms" / dev.name
             folder.mkdir(parents=True, exist_ok=True)
             print(f"  {dev.vm}: cloning from {base} ...")
@@ -319,10 +403,46 @@ class Lab:
         self._run(["modifyvm", dev.vm, "--vram", "8"])
         self._run(["modifyvm", dev.vm, "--uart2", "0x2f8", "3"])
         self._run(["modifyvm", dev.vm, "--uart1", "off"])
-        self._run(["modifyvm", dev.vm, "--nic1", "hostonly",
-                   "--hostonlyadapter1", "VirtualBox Host-Only Ethernet Adapter"])
+        if self.nat:
+            self._configure_nat(dev)
+        else:
+            self._run(["modifyvm", dev.vm, "--nic1", "hostonly",
+                       "--hostonlyadapter1", "VirtualBox Host-Only Ethernet Adapter"])
         # --uart-modeN cannot express hostMode="HostPipe", so patch the XML.
         self._patch_uart(dev)
+
+    def nat_rules(self, dev: LabDevice) -> list[str]:
+        """The port forwarding rules a NAT guest needs.
+
+        Behind NAT the host cannot reach the guest directly, so every service
+        the host uses is forwarded to a host side port: the VRP console, the
+        agentd control channel, and the per interface traffic ports the
+        relay hands over to the peer device.
+        """
+        idx = self.device_index(dev)
+        rules = [
+            f"console,tcp,{NAT_HOST_IP},{40000 + idx},{dev.ip},40000",
+            f"agentd,tcp,{NAT_HOST_IP},{56789 + idx},{dev.ip},56789",
+        ]
+        block = idx * INTERFACES_PER_DEVICE
+        for n in range(INTERFACES_PER_DEVICE):
+            rules.append(
+                f"local{n},udp,{NAT_HOST_IP},{LOCAL_PORT_BASE + block + n},"
+                f"{dev.ip},{LOCAL_PORT_BASE + n}")
+        return rules
+
+    def _configure_nat(self, dev: LabDevice) -> None:
+        """Attach the guest to NAT and forward the ports the host uses."""
+        self._run(["modifyvm", dev.vm, "--nic1", "nat"])
+        for rule in self.nat_rules(dev):
+            name = rule.split(",", 1)[0]
+            # a rule with that name may be left over from an earlier setup
+            try:
+                self._run(["modifyvm", dev.vm, "--natpf1", f"delete={name}"])
+            except LabError:
+                pass
+        for rule in self.nat_rules(dev):
+            self._run(["modifyvm", dev.vm, "--natpf1", rule])
 
     def _patch_uart(self, dev: LabDevice) -> None:
         cfg = self._run(["showvminfo", dev.vm, "--machinereadable"])
@@ -415,7 +535,7 @@ class Lab:
             if state.get("ports") != {str(k): v for k, v in port_map.items()}:
                 return True
         return not (state.get("ip") == dev.ip
-                    and state.get("host") == self.host_ip
+                    and state.get("host") == self.guest_host_ip
                     and state.get("disk") == disk.name
                     and state.get("size") == size)
 
@@ -429,7 +549,7 @@ class Lab:
         except OSError:
             size = -1
         marker.write_text(json.dumps({
-            "ip": dev.ip, "host": self.host_ip,
+            "ip": dev.ip, "host": self.guest_host_ip,
             "disk": disk.name, "size": size,
             "dest_port": bool(dest_port),
             "ports": {str(k): v for k, v in (port_map or {}).items()},
@@ -520,9 +640,9 @@ class Lab:
                 state = vbox.vm_state(dev.vm)
             except Exception:  # noqa: BLE001
                 pass
-            ports = agentd.probe_guest_ports(dev.ip)
-            alive = ports.get(agentd.AGENTD_CONTROL_PORT, False) or \
-                ports.get(agentd.VRP_CONSOLE_PORT, False)
+            agentd_up = agentd.probe_endpoint(self.agent_endpoint(dev), timeout=0.4)
+            vrp_up = agentd.probe_endpoint(self.console_endpoint(dev), timeout=0.4)
+            alive = agentd_up or vrp_up
             if alive and state == "unknown":
                 state = "running"
             rows.append({
@@ -530,13 +650,14 @@ class Lab:
                 "vm": dev.vm,
                 "ip": dev.ip,
                 "state": state,
-                "agentd": ports.get(agentd.AGENTD_CONTROL_PORT, False),
-                "vrp": ports.get(agentd.VRP_CONSOLE_PORT, False),
+                "agentd": agentd_up,
+                "vrp": vrp_up,
             })
         return {
             "lab": self.name,
             "root": str(self.root),
             "subnet": self.subnet,
+            "nic_mode": self.nic_mode,
             "supervisor": self.supervisor_state(),
             "devices": rows,
         }

@@ -196,6 +196,8 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
             verbose=verbose, peers=lab.relay_links(d), hub=hub,
             peer_ssids=[ssid.encode("latin-1") for _ip, _port, ssid in peer_links.values()],
             peer_infos=[(ip, ssid.encode("latin-1")) for ip, _port, ssid in peer_links.values()],
+            agent_endpoint=lab.agent_endpoint(d),
+            bind_host=lab.bind_host,
         )
         devs.append(HostDevice(opts=opts, log_prefix=f"{d.name}: ")
                     .start(wait_ready=False))
@@ -211,9 +213,7 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
     def devices_up() -> int:
         up = 0
         for d in lab.devices:
-            ports = agentd.probe_guest_ports(
-                d.ip, (agentd.AGENTD_CONTROL_PORT,), timeout=0.3)
-            if ports.get(agentd.AGENTD_CONTROL_PORT):
+            if agentd.probe_endpoint(lab.agent_endpoint(d), timeout=0.3):
                 up += 1
         return up
 
@@ -303,9 +303,7 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
         for dev, drv in zip(lab.devices, devs):
             if not drv.ready.is_set():
                 continue
-            ports = agentd.probe_guest_ports(
-                dev.ip, (agentd.AGENTD_CONTROL_PORT,), timeout=0.3)
-            if ports.get(agentd.AGENTD_CONTROL_PORT):
+            if agentd.probe_endpoint(lab.agent_endpoint(dev), timeout=0.3):
                 continue
             attempts[drv.log_prefix] += 1
             if attempts[drv.log_prefix] > 5:

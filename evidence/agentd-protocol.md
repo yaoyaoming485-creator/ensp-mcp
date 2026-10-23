@@ -264,6 +264,95 @@ injection is the one piece still missing.
 The crash itself is in the VRP's main thread — `cap.log` in the guest
 holds the backtrace (`./dev1() [0x815903d]` … `__libc_start_main+0x133`).
 
+### ③g NAT mode — the same protocol, one address different
+
+A host-only NIC in VirtualBox needs an NDIS filter
+(`oracle_VBoxNetLwf`, bound to the adapter as "VirtualBox NDIS6 Bridged
+Networking Driver"). When that binding is broken, *every* machine with a
+host-only NIC refuses to start:
+
+```
+VBoxManage.exe: error: Failed to open/create the internal network
+'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter'
+(VERR_INTNET_FLT_IF_NOT_FOUND)
+```
+
+Nothing in the protocol changes when the guests are moved to VirtualBox's
+NAT: only the addresses do.
+
+| | host-only | NAT |
+| --- | --- | --- |
+| guest address | `192.168.56.101` | `10.0.2.101` |
+| guest's view of the host | `192.168.56.1` | `10.0.2.2` (the NAT gateway alias) |
+| VRP console | `192.168.56.101:40000` | `127.0.0.1:40000+n` (forwarded) |
+| agentd control | `192.168.56.101:56789` | `127.0.0.1:56789+n` (forwarded) |
+| interface traffic | `192.168.56.1:30000+n` | `10.0.2.2:30000+n` |
+
+`resource.cfg`'s `dest:` is the guest's view of the host, so it becomes
+`10.0.2.2`; the `local:` stays the guest's own address. The forwarding rules
+are plain VirtualBox port forwards:
+
+```
+console,tcp,127.0.0.1,40000+n,10.0.2.101,40000
+agentd,tcp,127.0.0.1,56789+n,10.0.2.101,56789
+localN,udp,127.0.0.1,10000+n,10.0.2.101,10000+n
+```
+
+Measured result: both devices reach DEV2, stay up for hours (the host-only
+setup used to die after 110–125 s), and the console answers on the first
+command.
+
+### ③h The guest hard-codes the host address
+
+`192.168.56.1` appears **three times** in the guest binary
+(`strings agentd | grep 192.168`), and the media server's address is one of
+them. The guest therefore always dials `192.168.56.1:<media port>`, and the
+interface traffic is addressed by `resource.cfg`'s `dest:` — which the host
+does control.
+
+Consequence: behind NAT the media channel cannot work (the guest does not
+know the gateway alias), so the devices boot and answer, but the layer-2
+traffic between them still does not.
+
+### ③i The device identity, and why the AR image has no MUX-VLAN
+
+`resource.cfg` carries the device's personality:
+
+```
+device_type = 33
+interface[0] = socket[local:192.168.56.101:10000 dest:192.168.56.1:30000 …]
+```
+
+The guest booted from `AR_Base` reports itself as an **AR201**
+(`VRP (R) software, Version 5.130 (AR200 V200R003C00)`, "Board Type: AR201")
+with nine Ethernet ports — whatever the `.topo` says. That build has **no
+MUX-VLAN command set**:
+
+```
+[Huawei-vlan100] mux-vlan
+                ^
+Error: Unrecognized command found at '^' position.
+
+[Huawei-Ethernet0/0/1] port mux-vlan enable vlan 10
+                                    ^
+Error: Unrecognized command found at '^' position.
+```
+
+`/dev/upload/cmdtree.bin` does contain a MUXVLAN module ("Module ID( …
+4-MUXVLAN …)") and `infoeng.res` the whole MUX-VLAN error catalogue ("Please
+enable MUX-VLAN in vlan command mode.", "The separate VLAN already exists in
+the principal VLAN." …), but those are the *shared* resources of all VRP
+products — the AR201 personality does not enable the module.
+
+The switch payloads are installed (`devices/LSW/s5700/eNSP_Switch.exe`,
+139 MB) but there is no `LSW_Base.vdi`: eNSP injects the payload into the
+guest at start-up over its own file channel
+(`CFileTransmit::PrePut` / `CFileTransmit::PutData` in
+`eNSP_VBoxServer.exe`). What ends up in the guest is `/dev/upload/dev_base_0`,
+`dev_base_1`, `dev_base_2` — 237 KB, 1.8 MB and 99.5 MB, all three starting
+with the same 16 bytes and differing in the last four, i.e. a custom packed
+format, not a plain compression of the PE.
+
 ### ④ Console — the router's own CLI
 
 The VRP process listens on **guest TCP 40000** and speaks plain text. On a

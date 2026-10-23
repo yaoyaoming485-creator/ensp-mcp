@@ -343,16 +343,23 @@ def ensp_vrp_list_devices(prefix: str = "192.168.56.") -> str:
         prefix: the host-only subnet prefix, e.g. "192.168.56.".
     """
     try:
-        guests = agentd.guest_ip_from_host_only(prefix)
+        guests = agentd.guest_endpoints(prefix)
     except OSError as exc:
         return json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False)
     rows = []
     for ip in guests:
-        ports = agentd.probe_guest_ports(ip)
+        host, port = agentd.split_endpoint(ip, agentd.VRP_CONSOLE_PORT)
+        # a NAT guest is addressed through the loopback: the console of
+        # device n is 40000 + n and its control channel 56789 + n
+        if port == agentd.VRP_CONSOLE_PORT:
+            control = f"{host}:{agentd.AGENTD_CONTROL_PORT}"
+        else:
+            index = port - agentd.VRP_CONSOLE_PORT
+            control = f"{host}:{agentd.AGENTD_CONTROL_PORT + index}"
         rows.append({
             "guest_ip": ip,
-            "agentd_control": ports.get(agentd.AGENTD_CONTROL_PORT, False),
-            "vrp_console": ports.get(agentd.VRP_CONSOLE_PORT, False),
+            "agentd_control": agentd.probe_endpoint(control, timeout=0.4),
+            "vrp_console": agentd.probe_endpoint(ip, timeout=0.4),
         })
     return json.dumps({"ok": True, "count": len(rows), "devices": rows},
                       ensure_ascii=False, indent=2)

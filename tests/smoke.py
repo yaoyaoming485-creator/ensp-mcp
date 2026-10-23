@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import sys
 import tempfile
@@ -9,7 +10,7 @@ from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from ensp_mcp import agentd, console, models, topo, vbox  # noqa: E402
+from ensp_mcp import agentd, console, lab as labmod, models, topo, vbox  # noqa: E402
 
 failures: list[str] = []
 skipped: list[str] = []
@@ -193,10 +194,32 @@ print()
 print("=" * 72)
 print("7. real VRP console (guest TCP 40000)")
 print("=" * 72)
-guests = []
+
+
+def console_endpoints() -> list[str]:
+    """The console endpoints of the devices that can be reached.
+
+    A lab behind VirtualBox's NAT is reached through a forwarded port on the
+    loopback, so the endpoints of a running lab come first and the host-only
+    scan is only the fallback.
+    """
+    out: list[str] = []
+    root = os.environ.get("ENSPCTL_LAB_ROOT", "").strip()
+    if root:
+        try:
+            lab = labmod.Lab.load(root)
+            for dev in lab.devices:
+                out.append(lab.console_endpoint(dev))
+        except Exception:  # noqa: BLE001 - a bad path must not fail the test
+            pass
+    for ip in agentd.guest_ip_from_host_only():
+        out.append(f"{ip}:{agentd.VRP_CONSOLE_PORT}")
+    return out
+
+
+guests = console_endpoints()
 try:
-    guests = agentd.guest_ip_from_host_only()
-    check("guest discovery", len(guests) > 0, f"{len(guests)} guest(s): {guests}")
+    check("guest discovery", len(guests) > 0, f"{len(guests)} endpoint(s): {guests}")
 except Exception as exc:  # noqa: BLE001
     check("guest discovery", False, f"{type(exc).__name__}: {exc}")
 
@@ -207,10 +230,11 @@ if guests:
     target_guest = None
     busy_guest = None
     for ip in guests:
+        host, port = agentd.split_endpoint(ip, agentd.VRP_CONSOLE_PORT)
         s = socket.socket()
         s.settimeout(0.6)
         try:
-            s.connect((ip, agentd.VRP_CONSOLE_PORT))
+            s.connect((host, port))
             s.sendall(b"\r\n")
             s.settimeout(1.2)
             try:

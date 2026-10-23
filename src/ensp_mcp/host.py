@@ -229,6 +229,12 @@ class HostOptions:
     peer_infos: list[tuple[str, bytes]] = field(default_factory=list)
     #: routes the media frames between the devices of the lab
     hub: "MediaHub | None" = None
+    #: where the host reaches the guest's agentd control channel.  Empty
+    #: means "the guest's own address" - behind NAT the host uses a
+    #: forwarded port on the loopback instead.
+    agent_endpoint: str = ""
+    #: where the host binds its own sockets (the media server, the relay)
+    bind_host: str = ""
 
 
 @dataclass
@@ -255,6 +261,20 @@ class HostDevice:
     def log(self, msg: str) -> None:
         if self.opts.verbose:
             print(f"[{time.strftime('%H:%M:%S')}] {self.log_prefix}{msg}", flush=True)
+
+    def _agent_target(self) -> tuple[str, int]:
+        """Where the host reaches the guest's agentd control channel.
+
+        Normally that is the guest's own address; behind NAT the host goes
+        through a forwarded port on the loopback instead.
+        """
+        if self.opts.agent_endpoint:
+            host, _, port = self.opts.agent_endpoint.rpartition(":")
+            try:
+                return host, int(port)
+            except ValueError:
+                pass
+        return self.opts.guest_ip, AGENTD_CONTROL_PORT
 
     # ------------------------------------------------------------------ --
     def _read(self, handle, want: int, timeout: float) -> bytes:
@@ -377,13 +397,15 @@ class HostDevice:
         # The listening socket stays open for the whole life of the driver:
         # the guest's media client connects more than once, and a refused
         # re-connect makes the guest give up and power itself off.
-        server = MediaServer(self.opts.host_ip, self.opts.media_port)
+        server = MediaServer(self.opts.bind_host or self.opts.host_ip,
+                             self.opts.media_port)
         try:
             server.start()
         except Exception as exc:  # noqa: BLE001
             self.log(f"media: {exc}")
             return
-        self.log(f"media: listening on {self.opts.host_ip}:{self.opts.media_port}")
+        self.log(f"media: listening on {self.opts.bind_host or self.opts.host_ip}:"
+                 f"{self.opts.media_port}")
         try:
             while not self._stop.is_set():
                 try:
@@ -448,7 +470,8 @@ class HostDevice:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.settimeout(0.5)
         try:
-            s.sendto(b"\x00", (self.opts.guest_ip, 9))
+            target = self._agent_target()
+            s.sendto(b"\x00", (target[0], target[1]))
         except OSError:
             pass
         finally:
@@ -492,8 +515,9 @@ class HostDevice:
                     # So the attempt is started early and kept alive: it
                     # completes as soon as the guest starts listening.
                     sock = socket.create_connection(
-                        (self.opts.guest_ip, AGENTD_CONTROL_PORT), timeout=30.0)
-                    self.log(f"control: connected {self.opts.guest_ip}:{AGENTD_CONTROL_PORT}")
+                        self._agent_target(), timeout=30.0)
+                    self.log(f"control: connected {self._agent_target()[0]}:"
+                             f"{self._agent_target()[1]}")
                     break
                 except OSError as exc:
                     if not complained:
@@ -554,8 +578,8 @@ class HostDevice:
 
     # ------------------------------------------------------------------ --
     def start(self, wait_ready: bool = True, ready_timeout: float = 240.0) -> "HostDevice":
-        self.relay = UdpRelay(self.opts.host_ip, self.opts.peers,
-                              self.log_prefix)
+        self.relay = UdpRelay(self.opts.bind_host or self.opts.host_ip,
+                              self.opts.peers, self.log_prefix)
         self.relay.start()
         for fn in (self._serial_worker, self._media_worker, self._control_worker):
             t = threading.Thread(target=fn, daemon=True)

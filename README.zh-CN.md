@@ -234,6 +234,7 @@ $ enspctl lab down --root ./demo
 | `enspctl topo read x.topo` | 解析拓扑为 JSON |
 | `enspctl topo validate --spec s.json` | 校验 spec |
 | `enspctl lab create NAME --topo x.topo --root DIR` | 建 lab（加 `--with-vms` 克隆虚拟机） |
+| `enspctl lab create NAME ... --nic nat` | 设备走 VirtualBox NAT 而不是 host-only 网卡 |
 | `enspctl lab up --root DIR` | 改写配置、启动并驱动整个 lab |
 | `enspctl lab up --root DIR --no-patch` | 启动时不再改写客机镜像 |
 | `enspctl lab down --root DIR` | 关闭设备 |
@@ -272,6 +273,45 @@ lab 拥有一个目录：拓扑、每台设备一台 VirtualBox 虚拟机、以�
 
 > lab 的虚拟机**不是** eNSP 应用管理的那批，也不会出现在 eNSP 画布上。
 > `enspctl` 是通往同一批设备的另一条、可脚本化的路径。
+
+### NAT 模式（host-only 网卡坏掉时的退路）
+
+VirtualBox 的 host-only 网卡依赖一个 NDIS 过滤器。过滤器一旦失效，
+**所有带 host-only 网卡的虚拟机都起不来**：
+
+```
+VBoxManage.exe: error: Failed to open/create the internal network
+'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter'
+(VERR_INTNET_FLT_IF_NOT_FOUND)
+```
+
+这时 `enspctl lab create ... --nic nat` 会把设备挂到 VirtualBox 的 NAT 上：
+宿主的每个服务（VRP 控制台、agentd 控制通道、每个接口的流量端口）都用
+`--natpf1` 转发到回环地址上的一个端口，客机侧看到���宿主是 NAT 网关别名
+`10.0.2.2`，`resource.cfg` 里的 `dest:` 也会跟着改成它。
+
+```console
+$ enspctl lab create mux --topo lab.topo --root ./mux --nic nat \
+      --subnet 10.0.2 --start-ip 101
+$ enspctl lab up --root ./mux
+  R1: 9 socket line(s) -> local 10.0.2.101, dest 10.0.2.2
+  ...
+  R1: started
+  R2: started
+$ enspctl run R1 "display version" --root ./mux
+```
+
+NAT 模式的代价：客机里**硬编码**了 `192.168.56.1`（media server 与接口流量的
+宿主地址），所以媒体通道在 NAT 下不通 —— 设备能启动、能读文本，但设备之间的
+二层流量仍然起不来。
+
+### 下发整段配置
+
+```console
+$ enspctl run SW1 --file examples/mux-vlan/mux-vlan-sw1.cfg --root ./mux
+```
+
+`--file` 里每行一条命令，空行和 `#` 开头的行会被跳过。
 
 ### 用项目自己的 venv 启动，不要用 `uvx`
 

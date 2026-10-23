@@ -77,7 +77,8 @@ def cmd_topo_validate(args) -> int:
 def cmd_lab_create(args) -> int:
     lab = labmod.Lab.create(args.name, args.root, args.topo,
                             subnet=args.subnet, host_ip=args.host_ip,
-                            start_ip=args.start_ip, media_port=args.media_port)
+                            start_ip=args.start_ip, media_port=args.media_port,
+                            nic_mode=args.nic)
     print(f"lab {lab.name!r} created in {lab.root}")
     for d in lab.devices:
         print(f"  {d.name:<10} model={d.model:<10} vm={d.vm:<24} ip={d.ip:<16} pipe={d.pipe}")
@@ -103,10 +104,11 @@ def cmd_lab_patch(args) -> int:
         ports = lab.interface_ports(d)
         if not lab.needs_patch(d, vdi, dest_port=True, port_map=ports):
             print(f"  {d.name}: already patched -> local {d.ip}, "
-                  f"dest {lab.host_ip} ({vdi.name})")
+                  f"dest {lab.guest_host_ip} ({vdi.name})")
             continue
         try:
-            n, new_disk = rescfg.rewrite_vdi(vdi, d.ip, lab.host_ip, vm_name=d.vm,
+            n, new_disk = rescfg.rewrite_vdi(vdi, d.ip, lab.guest_host_ip,
+                                              vm_name=d.vm,
                                               media_port=d.media_port,
                                               port_map=ports)
         except rescfg.ResourceCfgError as exc:
@@ -115,7 +117,8 @@ def cmd_lab_patch(args) -> int:
             continue
         total += n
         lab.mark_patched(d, new_disk, dest_port=True, port_map=ports)
-        print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, dest {lab.host_ip}")
+        print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, "
+              f"dest {lab.guest_host_ip}")
     print(f"patched {total} socket line(s)")
     if failed:
         # A guest whose resource.cfg still points at the old addresses cannot
@@ -220,15 +223,19 @@ def cmd_dev_list(args) -> int:
         else:
             lab.print_status()
         return 0
-    # no lab: list every eNSP guest on the host-only subnet
-    guests = agentd.guest_ip_from_host_only()
+    # no lab: list every eNSP guest that can be reached
+    guests = agentd.guest_endpoints()
     rows = []
     for ip in guests:
-        ports = agentd.probe_guest_ports(ip)
+        host, port = agentd.split_endpoint(ip, agentd.VRP_CONSOLE_PORT)
+        if port == agentd.VRP_CONSOLE_PORT:
+            control = f"{host}:{agentd.AGENTD_CONTROL_PORT}"
+        else:
+            control = f"{host}:{agentd.AGENTD_CONTROL_PORT + (port - agentd.VRP_CONSOLE_PORT)}"
         rows.append({
             "guest_ip": ip,
-            "agentd_control": ports.get(agentd.AGENTD_CONTROL_PORT, False),
-            "vrp_console": ports.get(agentd.VRP_CONSOLE_PORT, False),
+            "agentd_control": agentd.probe_endpoint(control, timeout=0.4),
+            "vrp_console": agentd.probe_endpoint(ip, timeout=0.4),
         })
     if args.json:
         _print_json({"count": len(rows), "devices": rows})
@@ -241,11 +248,16 @@ def cmd_dev_list(args) -> int:
 
 
 def _resolve_guest(args) -> str:
+    """The address of the VRP console, as the host reaches it.
+
+    The result is ``"host"`` or ``"host:port"``: behind NAT the host reaches
+    the console through a forwarded port on the loopback.
+    """
     if args.guest_ip:
         return args.guest_ip
     lab = _lab_or_none(args)
     if lab is not None:
-        return lab.device(args.device).ip
+        return lab.console_endpoint(lab.device(args.device))
     # fall back to the only guest that answers
     guests = agentd.guest_ip_from_host_only()
     if len(guests) == 1:
@@ -256,14 +268,37 @@ def _resolve_guest(args) -> str:
         f"several guests are reachable ({', '.join(guests)}) - name one with --guest-ip")
 
 
+def _config_lines(path: str) -> list[str]:
+    """Read a configuration file into a list of VRP commands.
+
+    Blank lines and lines starting with ``#`` are skipped, so a config file
+    can carry the comments that explain it.
+    """
+    out: list[str] = []
+    for raw in Path(path).read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        out.append(line)
+    return out
+
+
 def cmd_dev_exec(args) -> int:
+    commands = list(args.commands)
+    if getattr(args, "file", ""):
+        try:
+            commands = _config_lines(args.file)
+        except OSError as exc:
+            return _die(f"cannot read {args.file}: {exc}")
+    if not commands:
+        return _die("no commands given")
     try:
         guest = _resolve_guest(args)
     except labmod.LabError as exc:
         return _die(str(exc))
     try:
         with agentd.VrpConsole(guest) as con:
-            out = con.run(args.commands, wait=args.wait)
+            out = con.run(commands, wait=args.wait)
     except agentd.VrpConsoleError as exc:
         return _die(str(exc))
     if args.raw:
@@ -436,6 +471,9 @@ def build_parser() -> argparse.ArgumentParser:
     lc.add_argument("--host-ip", default=labmod.DEFAULT_HOST_IP)
     lc.add_argument("--start-ip", type=int, default=labmod.DEFAULT_BASE_IP)
     lc.add_argument("--media-port", type=int, default=labmod.DEFAULT_MEDIA_PORT)
+    lc.add_argument("--nic", choices=["hostonly", "nat"], default="hostonly",
+                    help="how the guests are attached to the host: a host-only "
+                         "NIC (default) or VirtualBox's NAT")
     lc.add_argument("--with-vms", action="store_true",
                     help="also clone the VirtualBox machines")
     lc.set_defaults(func=cmd_lab_create)
@@ -486,6 +524,8 @@ def build_parser() -> argparse.ArgumentParser:
     de.add_argument("--guest-ip", default="")
     de.add_argument("--wait", type=float, default=1.5)
     de.add_argument("--raw", action="store_true", help="print without headers")
+    de.add_argument("--file", default="",
+                    help="read the commands from a file (one per line)")
     de.set_defaults(func=cmd_dev_exec)
 
     ds = d.add_parser("shell", help="interactive VRP session")
@@ -497,11 +537,13 @@ def build_parser() -> argparse.ArgumentParser:
     # ---- run (shorthand) -----------------------------------------------
     r = sub.add_parser("run", help="run VRP commands on a device (shorthand)")
     r.add_argument("device")
-    r.add_argument("commands", nargs="+")
+    r.add_argument("commands", nargs="*")
     r.add_argument("--root", default="")
     r.add_argument("--guest-ip", default="")
     r.add_argument("--wait", type=float, default=1.5)
     r.add_argument("--raw", action="store_true")
+    r.add_argument("--file", default="",
+                   help="read the commands from a file (one per line)")
     r.set_defaults(func=cmd_run)
 
     # ---- environment ----------------------------------------------------
