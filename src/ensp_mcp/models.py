@@ -151,12 +151,16 @@ def _s3700() -> Model:
     # eNSP labels the S3700's 22 FE ports Ethernet0/0/1..22 and its 2 uplinks
     # GE0/0/1..2, i.e. both groups are 1-based.
     xml, ports = _counted([_repeat("Ethernet", 22, start=1), _repeat("GE", 2, start=1)])
-    return Model("S3700", "switch", ports, xml)
+    return Model("S3700", "switch", ports, xml,
+                 note="needs the LSW device package (the guest payload is not "
+                      "in the installer)")
 
 
 def _s5700() -> Model:
     xml, ports = _counted([_repeat("GE", 24)])
-    return Model("S5700", "switch", ports, xml)
+    return Model("S5700", "switch", ports, xml,
+                 note="needs the LSW device package (the guest payload is not "
+                      "in the installer)")
 
 
 def _ce(name: str, count: int) -> Model:
@@ -301,7 +305,8 @@ _register(
 
 # Devices whose images do NOT ship with the eNSP installer.  A topology that
 # uses them is valid, but the device cannot start until the image is imported.
-NEEDS_IMAGE = frozenset({"NE40E", "NE5000E", "NE9000", "CE6800", "CE12800", "CX", "USG6000V"})
+NEEDS_IMAGE = frozenset({"NE40E", "NE5000E", "NE9000", "CE6800", "CE12800", "CX",
+                         "USG6000V", "S5700", "S3700"})
 
 CATALOG: dict[str, Model] = dict(sorted(_CATALOG.items()))
 

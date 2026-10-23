@@ -439,6 +439,21 @@ python scripts/vrp_cli.py --guest 192.168.56.101 display version
 interface sockets point at an address the guest actually owns — without it
 VRP exits with `VPORT_Hal_PortEnable failed!`.
 
+### The guest's payload format
+
+The device software in `/dev/upload/dev_base_0|1|2` is **not** compressed:
+the guest's `agentd` decrypts it with a plain XOR against a 4096-byte key
+that lives in agentd's `.data` section (the key restarts at the beginning of
+every 4096-byte block). `scripts/pack_payload.py` takes the key straight out
+of an `agentd` binary and encrypts or decrypts a payload file with it — a
+round trip is byte-identical, which is how the format was confirmed.
+
+```bash
+python scripts/pack_payload.py key path/to/agentd
+python scripts/pack_payload.py decrypt dev_base_2 dev2 --agentd path/to/agentd
+file dev2      # ELF 32-bit LSB executable, Intel i386
+```
+
 ### A worked example
 
 ```console

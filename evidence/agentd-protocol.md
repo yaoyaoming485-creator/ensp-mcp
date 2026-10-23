@@ -342,16 +342,61 @@ Error: Unrecognized command found at '^' position.
 4-MUXVLAN …)") and `infoeng.res` the whole MUX-VLAN error catalogue ("Please
 enable MUX-VLAN in vlan command mode.", "The separate VLAN already exists in
 the principal VLAN." …), but those are the *shared* resources of all VRP
-products — the AR201 personality does not enable the module.
+products — the AR201 personality does not enable the module. The command
+tree itself is a flat table of names (`"mux-vlan"` sits in a 0x50-byte slot
+at 0x60b60 of `cmdtree.bin`), so the product gate is not a flag that can be
+flipped by hand.
 
-The switch payloads are installed (`devices/LSW/s5700/eNSP_Switch.exe`,
-139 MB) but there is no `LSW_Base.vdi`: eNSP injects the payload into the
-guest at start-up over its own file channel
-(`CFileTransmit::PrePut` / `CFileTransmit::PutData` in
-`eNSP_VBoxServer.exe`). What ends up in the guest is `/dev/upload/dev_base_0`,
-`dev_base_1`, `dev_base_2` — 237 KB, 1.8 MB and 99.5 MB, all three starting
-with the same 16 bytes and differing in the last four, i.e. a custom packed
-format, not a plain compression of the PE.
+### ③j The guest's payload format: a 4096-byte XOR key
+
+`/dev/upload/dev_base_0`, `dev_base_1` and `dev_base_2` (237 KB, 1.8 MB,
+99.5 MB) are **not** compressed and not packed in any complicated way.
+agentd's `decompress()` (0x0804c2df) is a misnomer: it XORs the file with a
+4096-byte key that lives in agentd's `.data` section (vaddr 0x08050220,
+file offset 0x7220), restarting the key at the beginning of every
+4096-byte block; the tail of the file (`size % 4096` bytes) is keyed from
+offset 0 again.
+
+XOR is its own inverse, so the same key encrypts and decrypts. Decrypted,
+the three files are ordinary Linux binaries:
+
+| file | size | what it is |
+| --- | --- | --- |
+| `dev_base_0` | 237 KB | the capture helper (libpcap) |
+| `dev_base_1` | 1.8 MB | the **AR200 forwarding plane** ("AR200 PTM G.SHDLS …") — the process that crashes in `cap.log` |
+| `dev_base_2` | 99.5 MB | the **VRP core** (the whole VOS/VRP module list) |
+
+`scripts/pack_payload.py` implements this and is verified by a byte-identical
+round trip; the key is derived from the guest's own agentd, so no vendor
+file is copied into this repository.
+
+This also explains what a **switch** guest would need: the switch's *Linux*
+payloads, not the Windows one. `devices/LSW/s5700/eNSP_Switch.exe` (140 MB)
+is a **Windows PE** (94 MB of `.text`, a 43 MB `.textbss` BSS) and contains
+no embedded ELF — the guest needs `dev_base_*` built from the switch's Linux
+VRP, which eNSP ships as a downloadable *device package* (the client offers
+"Please import device %s's package." / "Click 'Yes' to download") and injects
+over its file channel (`CFileTransmit::PrePut` / `PutData`).
+
+### ③k What the host does with the guest's 4-byte query
+
+`CInterface::ProcData` in `eNSP_VBoxServer.exe` (0x410180) receives the
+guest's datagram and:
+
+* if the length is exactly 4 → clears a flag on the interface
+  (`iface+0x8 = 0`) and **does not** call `CaptureData` (so those four bytes
+  are not parsed as an IP) and does not answer;
+* stores the sender's socket address in the interface object
+  (`iface+0x30`, 16 bytes);
+* forwards the payload to the **eNSP client** (the GUI) — that is the
+  "send data to client" path — and, for everything longer than 4 bytes, to
+  the guest ("send data to vbox").
+
+So the answer to the guest's "where is my peer?" is produced by the **eNSP
+client**, not by the host process: the host is only the courier between the
+guest and the GUI. A lab that drives the guests without the GUI has to
+answer those four bytes itself — and the exact layout the client uses is
+still unknown.
 
 ### ④ Console — the router's own CLI
 

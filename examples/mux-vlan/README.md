@@ -96,15 +96,25 @@ Error: Unrecognized command found at '^' position.
 ```
 
 （`/dev/upload/cmdtree.bin` 里确实有 MUXVLAN 模块、`infoeng.res` 里也有整套 MUX-VLAN
-报错文案，但那是全产品共用的资源文件，不代表 AR201 开启了��特性。）
+报错文案，但那是全产品共用的资源文件，不代表 AR201 开启了该特性；命令树本身是一张
+扁平的命令名表，产品开关不是能直接翻的标志位。）
 
-交换机镜像 `devices/LSW/s5700/eNSP_Switch.exe` 在安装目录里，但没有 `LSW_Base.vdi`：
-eNSP 是用宿主侧的文件传输通道（`CFileTransmit::PrePut/PutData`）把交换机 VRP 载荷
-注入 guest 磁盘的，guest 里的载荷 `dev_base_0/1/2` 是带自定义头的打包格式
-（三段共享 16 字节头，段号不同则头尾 4 字节不同）。要拿到交换机设备，需要：
+交换机镜像 `devices/LSW/s5700/eNSP_Switch.exe` 在安装目录里，但它是 **Windows PE**
+（94 MB 的 `.text` + 43 MB 的 `.textbss`），里面没有内嵌 ELF；客机需要的是**交换机
+的 Linux 载荷**（`dev_base_0/1/2`），eNSP 以「设备包」形式下载后再通过自己的文件
+通道（`CFileTransmit::PrePut`/`PutData`）注入 guest。
 
-1. 用真实 eNSP 客户端创建一台 S5700（客户端会自己完成载荷注入），再把它克隆进 lab；或
-2. 逆向 `CFileTransmit` 通道 + `dev_base_*` 打包格式，自己造交换机 guest。
+好消息：客机载荷的格式已经吃透 —— 就是**一把 4096 字节的 XOR 密钥**
+（密钥在 agentd 的 `.data`，`decompress()` 其实只做异或），见
+[`evidence/agentd-protocol.md`](../../evidence/agentd-protocol.md) 的 ③j 节和
+`scripts/pack_payload.py`（加解密往返逐字节一致已验证）。所以一旦拿到交换机的
+Linux 载荷，打包进 guest 就能造出 S5700 设备。
+
+因此要跑完整实验，只差一步：
+
+1. 在 eNSP 客户端里导入（或让它下载）**交换机设备包**（LSW/S5700），
+   客户端会自己把载荷注入 guest；然后把那台设备克隆进 lab；或
+2. 逆向 eNSP 的 `CFileTransmit` 通道与设备包格式，自己造交换机 guest。
 
 ## 出处
 

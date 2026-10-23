@@ -405,6 +405,22 @@ python scripts/vrp_cli.py --guest 192.168.56.101 display version
 `scripts/patch_resource.py` 改写客机的 `resource.cfg`，让 VRP 的接口 socket
 指向客机真正持有的地址 —— 不改的话 VRP 会以 `VPORT_Hal_PortEnable failed!` 挂掉。
 
+### 客机载荷的格式
+
+`/dev/upload/dev_base_0|1|2` 里的设备软件**没有**被压缩：客机的 `agentd` 只是拿
+一把 4096 字节的密钥做异或（每个 4096 字节块从密钥开头重新开始）。
+`scripts/pack_payload.py` 能直接从 `agentd` 二进制里取出这把钥匙并加/解密载荷文件
+——**往返逐字节一致**，格式就是这样确认的。
+
+```bash
+python scripts/pack_payload.py key path/to/agentd
+python scripts/pack_payload.py decrypt dev_base_2 dev2 --agentd path/to/agentd
+file dev2      # ELF 32-bit LSB executable, Intel i386
+```
+
+解密后可知三段载荷分别是：抓包助手、`AR200` 转发面（就是崩溃日志里那个 `dev1`）、
+VRP 主控面（99.5 MB）。
+
 ### 实际效果
 
 ```console

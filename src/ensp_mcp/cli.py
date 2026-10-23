@@ -396,7 +396,7 @@ def cmd_models(args) -> int:
         return 0
     print(f"{'model':<12} {'category':<10} {'ports':<6} image")
     for r in rows:
-        need = "external" if r.get("needs_image") else "-"
+        need = "external" if r.get("needs_device_image") else "-"
         print(f"{r['model']:<12} {r['category']:<10} "
               f"{len(r.get('ports', [])):<6} {need}")
     return 0
