@@ -287,9 +287,23 @@ than four bytes is dropped. A `2` from the host resets the counter to 0
 
 | Received | Effect |
 | --- | --- |
-| `1` | sets the port flag and makes the guest report `3` back |
-| `2` | resets the counter to 0 — this is the one that keeps the port usable |
+| `1` | sets the port flag and makes the guest send `2` back (`0x0804bcf0`) |
+| `2` | resets the counter to 0 — this is the one that opens the data path |
 | `3` | sets the port flag only |
+
+Three details make the timing exact:
+
+* the counter starts at **5** for all 200 ports, with the `+0x04` flag cleared
+  (`0x0804beb2`, `0x0804bebb`, loop to `0xc8`), so a port is in control state
+  from boot and never opens until a `2` arrives;
+* `+0x04` is only ever written to 0 inside the guest — nothing there sets it to
+  1 — so a `2` takes effect in normal operation;
+* the window is short. After the reset the counter climbs by one per handshake
+  round, so data state lasts five rounds; the guest sends every 10 ms, i.e.
+  about **50 ms**. The host has to answer **every** probe, not once.
+
+The guest itself answers a `1` with `2`, which is the clearest statement of the
+convention: `2` is the value that means "seen" and reopens the port.
 
 Answering with the peer's address is silently discarded — which is what this
 implementation used to do, and a good candidate for why the interfaces came up
