@@ -6,8 +6,9 @@ device up yourself and then talk to its VRP console.
 It runs three things at once:
 
   1. a **named-pipe server** for the device's COM2 UART, so VirtualBox
-     connects to us (see evidence/agentd-protocol.md for why the roles have
-     to be inverted);
+     connects to us and we own the pipe instance (see
+     evidence/agentd-protocol.md: the roles are inverted for robustness, not
+     because a VBox-created pipe refuses read-write);
   2. a **media server** on 192.168.56.1, which the guest dials back to;
   3. a **control client** on guest TCP 56789, answering the guest's boot
      frame with code 1 so the VRP processes start.

@@ -473,6 +473,13 @@ single-instance named pipe, so the failure comes from that one instance
 already being connected or owned — the guest side has connected, or another
 process holds it — rather than from the pipe's ACL being read-only.
 
+Supporting but not conclusive: a purpose-built single-instance named pipe
+(`CreateNamedPipeW` with `nMaxInstances = 1`, `PIPE_ACCESS_DUPLEX`) accepted
+`os.open(..., os.O_RDWR | os.O_BINARY)` from the host and returned OK while
+that instance was free. That is consistent with "the instance has to be free"
+and inconsistent with "the ACL is read-only", but it does not reproduce the
+VirtualBox case, so the trigger stays a hypothesis.
+
 `server="false"` is still the recommended arrangement, for robustness
 rather than as a hard requirement. With the UART configured as
 `server="false" hostMode="HostPipe"`, **VirtualBox connects to a pipe the
