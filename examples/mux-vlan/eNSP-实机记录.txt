@@ -1,0 +1,158 @@
+实验（训）9 MUX-VLAN —— eNSP 1.3.00.100 实机记录
+采集时间：2026-10-23 ~ 2026-10-24
+设备：LSW1 / LSW2 = eNSP S5700（宿主进程 eNSP_Switch.exe），VRP (R) software, Version 5.110 (S5700 V200R001C00)
+
+================================================================================
+一、主 VLAN 与从 VLAN 的创建
+================================================================================
+
+[LSW1] system-view
+[Huawei] vlan 10
+[Huawei-vlan10] quit
+[Huawei] vlan 20
+[Huawei-vlan20] quit
+[Huawei] vlan 30
+[Huawei-vlan30] quit
+[Huawei] vlan 100
+[Huawei-vlan100] mux-vlan
+[Huawei-vlan100] quit
+[Huawei] vlan 100
+[Huawei-vlan100] subordinate separate 10
+[Huawei-vlan100] subordinate group 20
+[Huawei-vlan100] subordinate group 30
+[Huawei-vlan100] quit
+[Huawei] display mux-vlan
+Principal Subordinate Type         Interface
+----------------------------------------------------------------------------
+100       -           principal
+100       10          separate
+100       20          group
+100       30          group
+----------------------------------------------------------------------------
+[Huawei]
+
+--- 三个写错时的真实报错（供对照）---
+
+① 在从 VLAN 的视图里写 subordinate（参数也写错成主 VLAN 的 ID）：
+[Huawei] vlan 10
+[Huawei-vlan10] subordinate separate 100
+Error: Must configure principal vlan firstly.
+
+② 从 VLAN 还没创建就挂：
+[Huawei-vlan100] subordinate separate 10
+Error: Vlan is not exist.
+
+③ 同一批粘贴里，主 VLAN 的 mux-vlan 还没单独提交就写 subordinate：
+[Huawei-vlan100] subordinate separate 10
+Error: Please enable MUX-VLAN in vlan command mode.
+
+================================================================================
+二、接口配置与 VLAN 归属
+================================================================================
+
+[Huawei] interface GigabitEthernet0/0/1
+[Huawei-GigabitEthernet0/0/1] port link-type access
+[Huawei-GigabitEthernet0/0/1] port default vlan 10
+[Huawei-GigabitEthernet0/0/1] port mux-vlan enable
+[Huawei-GigabitEthernet0/0/1] quit
+   …… GE0/0/2 同上（部门1 的 PC3）……
+   …… GE0/0/3 -> vlan 20（PC2）；GE0/0/4 -> vlan 30（PC4）……
+
+[Huawei] interface GigabitEthernet0/0/5
+[Huawei-GigabitEthernet0/0/5] port link-type trunk
+[Huawei-GigabitEthernet0/0/5] port trunk allow-pass vlan 10 20 30 100
+[Huawei-GigabitEthernet0/0/5] port mux-vlan enable
+Error: Only one VLAN can be configured on the port.
+
+[Huawei] display vlan
+VID  Type    Ports
+--------------------------------------------------------------------------------
+10   mux-sub UT:GE0/0/1(U)      GE0/0/2(U)
+             TG:GE0/0/5(U)
+20   mux-sub UT:GE0/0/3(U)
+             TG:GE0/0/5(U)
+30   mux-sub UT:GE0/0/4(U)
+             TG:GE0/0/5(U)
+100  mux     TG:GE0/0/5(U)
+--------------------------------------------------------------------------------
+
+================================================================================
+三、本平台的硬限制：主 VLAN 不能配三层接口（没有共享网关）
+================================================================================
+
+[Huawei] interface Vlanif100
+Error: The VLAN is already a MUX VLAN.
+
+--- 反过来先建三层接口也不行 ---
+[Huawei] interface Vlanif100
+[Huawei-Vlanif100] ip address 192.168.1.1 255.255.255.0
+[Huawei-Vlanif100] quit
+[Huawei] vlan 100
+[Huawei-vlan100] mux-vlan
+Error: The VLAN has a L3 interface, Please delete it first.
+
+================================================================================
+四、互通 / 隔离验证（实机 ping）
+================================================================================
+
+--- 部门2（互通型从 VLAN，跨两台交换机）：通 ---
+[LSW2] ping 192.168.1.12          (PC2，在 LSW1 的 GE0/0/3)
+  PING 192.168.1.12: 56  data bytes, press CTRL_C to break
+    Reply from 192.168.1.12: bytes=56 Sequence=1 ttl=128 time=90 ms
+    Reply from 192.168.1.12: bytes=56 Sequence=2 ttl=128 time=50 ms
+    Reply from 192.168.1.12: bytes=56 Sequence=3 ttl=128 time=70 ms
+    Reply from 192.168.1.12: bytes=56 Sequence=4 ttl=128 time=30 ms
+    Reply from 192.168.1.12: bytes=56 Sequence=5 ttl=128 time=60 ms
+  --- 192.168.1.12 ping statistics ---
+    5 packet(s) transmitted
+    5 packet(s) received
+    0.00% packet loss
+    round-trip min/avg/max = 30/60/90 ms
+
+--- 部门1（隔离型从 VLAN，同 VLAN 内也隔离）：不通 ---
+[LSW2] ping 192.168.1.11          (PC1，在 LSW1 的 GE0/0/1)
+  PING 192.168.1.11: 56  data bytes, press CTRL_C to break
+    Request time out
+    Request time out
+    Request time out
+    Request time out
+    Request time out
+  --- 192.168.1.11 ping statistics ---
+    5 packet(s) transmitted
+    0 packet(s) received
+    100.00% packet loss
+
+[LSW2] ping 192.168.1.13          (PC3，部门1 的另一个成员)
+  --- 192.168.1.13 ping statistics ---
+    5 packet(s) transmitted
+    0 packet(s) received
+    100.00% packet loss
+
+--- 跨交换机的二层通路是通的（LSW1 学到了 LSW2 的 MAC）---
+[LSW1] display mac-address
+MAC address table of slot 0:
+-------------------------------------------------------------------------------
+MAC Address    VLAN/       PEVLAN CEVLAN Port            Type      LSP/LSR-ID
+4c1f-cc55-7eec 10          -      -      GE0/0/5         dynamic   0/-
+-------------------------------------------------------------------------------
+Total matching items on slot 0 displayed = 1
+
+--- 端口计数器（隔离型 VLAN10 vs 互通型 VLAN20，同样的探测流量）---
+  GigabitEthernet0/0/1   in=8    out=855      (VLAN10, separate)
+  GigabitEthernet0/0/2   in=0    out=841      (VLAN10, separate)
+  GigabitEthernet0/0/3   in=0    out=848      (VLAN20, group)
+  GigabitEthernet0/0/5   in=919  out=8        (互联口)
+  → 互联口（trunk）上下来的帧不递送进 MUX 组成员域，跨交换机的 MUX 语义
+    只能靠组内成员口互访来验证。
+
+================================================================================
+五、终端（PC）地址的下发时机
+================================================================================
+
+eNSP 的 PC 终端只有在【设备已启动】时才会把「基础配置」页里的地址真正下发给
+guest；先填地址再启动设备会丢配置，表现为交换机上 MAC/ARP 表全空
+（本机实测：设备启动后重新填地址并 Apply，GE0/0/1 的 Input 计数从 0 变成 8，
+即 PC1 终于开始发 ARP 了）。
+
+把地址写进拓扑 spec 的 ip / mask / gw 字段、由客户端在设备启动时下发，
+是更可靠的做法（见 lab9/lab9.topo.json）。

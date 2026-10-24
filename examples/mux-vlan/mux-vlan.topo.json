@@ -11,13 +11,13 @@
     {"name": "Server", "model": "Server", "x": 720, "y": 360, "ip": "192.168.100.100", "mask": "255.255.255.0", "gw": "192.168.100.1"}
   ],
   "links": [
-    {"a": "SW1", "b": "PC1", "a_if": "GE0/0/0", "b_if": "Ethernet0/0/0", "type": "Copper"},
-    {"a": "SW1", "b": "PC2", "a_if": "GE0/0/1", "b_if": "Ethernet0/0/0", "type": "Copper"},
-    {"a": "SW1", "b": "PC3", "a_if": "GE0/0/2", "b_if": "Ethernet0/0/0", "type": "Copper"},
-    {"a": "SW1", "b": "PC4", "a_if": "GE0/0/3", "b_if": "Ethernet0/0/0", "type": "Copper"},
-    {"a": "SW1", "b": "PC5", "a_if": "GE0/0/4", "b_if": "Ethernet0/0/0", "type": "Copper"},
-    {"a": "SW1", "b": "PC6", "a_if": "GE0/0/5", "b_if": "Ethernet0/0/0", "type": "Copper"},
-    {"a": "SW1", "b": "Server", "a_if": "GE0/0/6", "b_if": "Ethernet0/0/0", "type": "Copper"}
+    {"a": "SW1", "b": "PC1", "a_if": "GE0/0/1", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "SW1", "b": "PC2", "a_if": "GE0/0/2", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "SW1", "b": "PC3", "a_if": "GE0/0/3", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "SW1", "b": "PC4", "a_if": "GE0/0/4", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "SW1", "b": "PC5", "a_if": "GE0/0/5", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "SW1", "b": "PC6", "a_if": "GE0/0/6", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "SW1", "b": "Server", "a_if": "GE0/0/7", "b_if": "Ethernet0/0/1", "type": "Copper"}
   ],
   "labels": [
     {"text": "部门1 VLAN10 隔离型从VLAN", "x": 60, "y": 40},

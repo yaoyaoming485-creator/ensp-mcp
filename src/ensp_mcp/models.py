@@ -157,10 +157,13 @@ def _s3700() -> Model:
 
 
 def _s5700() -> Model:
-    xml, ports = _counted([_repeat("GE", 24)])
+    # eNSP labels the S5700's 24 ports GigabitEthernet0/0/1 .. 0/0/24, i.e. the
+    # group is 1-based (the S3700 above is the same).  Getting this wrong shifts
+    # every link by one port on the canvas.
+    xml, ports = _counted([_repeat("GE", 24, start=1)])
     return Model("S5700", "switch", ports, xml,
-                 note="needs the LSW device package (the guest payload is not "
-                      "in the installer)")
+                 note="runs in eNSP as a host process (eNSP_Switch.exe); it ships "
+                      "with the installer and needs no device package")
 
 
 def _ce(name: str, count: int) -> Model:
@@ -223,7 +226,7 @@ def _sta(name: str) -> Model:
 # --------------------------------------------------------------------------
 
 def _pc_like(name: str, category: str, count: int, settings: str) -> Model:
-    xml, ports = _counted([_repeat("Ethernet", count)])
+    xml, ports = _counted([_repeat("Ethernet", count, start=1)])
     return Model(name, category, ports, xml, settings_template=settings, has_com_port=False)
 
 
@@ -306,7 +309,7 @@ _register(
 # Devices whose images do NOT ship with the eNSP installer.  A topology that
 # uses them is valid, but the device cannot start until the image is imported.
 NEEDS_IMAGE = frozenset({"NE40E", "NE5000E", "NE9000", "CE6800", "CE12800", "CX",
-                         "USG6000V", "S5700", "S3700"})
+                         "USG6000V", "S3700"})
 
 CATALOG: dict[str, Model] = dict(sorted(_CATALOG.items()))
 

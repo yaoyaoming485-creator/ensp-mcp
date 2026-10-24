@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UNICODE" ?>
+<topo version="1.3.00.100">
+    <devices>
+        <dev id="68AD1302-987B-4345-ACBA-85BF941DCF20" name="LSW1" poe="0" model="S5700" settings="" system_mac="" com_port="2000" bootmode="0" cx="430.000000" cy="240.000000" edit_left="457" edit_top="294">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="GE" count="24" />
+            </slot>
+        </dev>
+        <dev id="85F65407-FB24-4104-84AE-FD4666C2A7A8" name="LSW2" poe="0" model="S5700" settings="" system_mac="" com_port="2001" bootmode="0" cx="430.000000" cy="560.000000" edit_left="457" edit_top="614">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="GE" count="24" />
+            </slot>
+        </dev>
+        <dev id="82034F31-95A6-4855-B465-6CE4C0F75759" name="PC1" poe="0" model="PC" settings=" -simpc_ip 192.168.1.11 -simpc_mask 255.255.255.0 -simpc_gateway 192.168.1.1 -simpc_mac 5A-57-F7-C0-E4-6C" system_mac="" com_port="0" bootmode="0" cx="170.000000" cy="150.000000" edit_left="197" edit_top="204">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="Ethernet" count="1" />
+            </slot>
+        </dev>
+        <dev id="47C5901D-2C69-4D1F-B482-DCB7C5D33FD3" name="PC2" poe="0" model="PC" settings=" -simpc_ip 192.168.1.12 -simpc_mask 255.255.255.0 -simpc_gateway 192.168.1.1 -simpc_mac D2-3F-D3-C5-B7-DC" system_mac="" com_port="0" bootmode="0" cx="170.000000" cy="330.000000" edit_left="197" edit_top="384">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="Ethernet" count="1" />
+            </slot>
+        </dev>
+        <dev id="385B383C-08E3-4072-82E7-36CBF9008B53" name="PC3" poe="0" model="PC" settings=" -simpc_ip 192.168.1.13 -simpc_mask 255.255.255.0 -simpc_gateway 192.168.1.1 -simpc_mac 52-8B-00-F9-CB-36" system_mac="" com_port="0" bootmode="0" cx="690.000000" cy="150.000000" edit_left="717" edit_top="204">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="Ethernet" count="1" />
+            </slot>
+        </dev>
+        <dev id="C5D20467-AF6C-4C5A-A281-4AF4538ECE4F" name="PC4" poe="0" model="PC" settings=" -simpc_ip 192.168.1.14 -simpc_mask 255.255.255.0 -simpc_gateway 192.168.1.1 -simpc_mac 4E-CE-8E-53-F4-4A" system_mac="" com_port="0" bootmode="0" cx="690.000000" cy="330.000000" edit_left="717" edit_top="384">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="Ethernet" count="1" />
+            </slot>
+        </dev>
+        <dev id="9AB04572-74A0-4BA0-8A7A-56E0A20ACA86" name="PC5" poe="0" model="PC" settings=" -simpc_ip 192.168.1.15 -simpc_mask 255.255.255.0 -simpc_gateway 192.168.1.1 -simpc_mac 86-CA-0A-A2-E0-56" system_mac="" com_port="0" bootmode="0" cx="170.000000" cy="520.000000" edit_left="197" edit_top="574">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="Ethernet" count="1" />
+            </slot>
+        </dev>
+        <dev id="68BE982F-D699-4427-86E6-3ACA82890E47" name="PC6" poe="0" model="PC" settings=" -simpc_ip 192.168.1.16 -simpc_mask 255.255.255.0 -simpc_gateway 192.168.1.1 -simpc_mac 46-0E-89-82-CA-3A" system_mac="" com_port="0" bootmode="0" cx="170.000000" cy="660.000000" edit_left="197" edit_top="714">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="Ethernet" count="1" />
+            </slot>
+        </dev>
+        <dev id="3CC165E8-D09C-44F5-A561-A8A5D5838F1C" name="Server1" poe="0" model="Server" settings="-domain 0 -eth 1E-8F-83-D5-A5-A8 -ipaddr 192.168.1.2 -ipmask 255.255.255.0 -gateway 192.168.1.1" system_mac="" com_port="0" bootmode="0" cx="690.000000" cy="560.000000" edit_left="717" edit_top="614">
+            <slot number="slot17" isMainBoard="1">
+                <interface sztype="Ethernet" interfacename="Ethernet" count="1" />
+            </slot>
+        </dev>
+    </devices>
+    <lines>
+        <line srcDeviceID="68AD1302-987B-4345-ACBA-85BF941DCF20" destDeviceID="82034F31-95A6-4855-B465-6CE4C0F75759">
+            <interfacePair lineName="Copper" srcIndex="0" tarIndex="0" />
+        </line>
+        <line srcDeviceID="68AD1302-987B-4345-ACBA-85BF941DCF20" destDeviceID="385B383C-08E3-4072-82E7-36CBF9008B53">
+            <interfacePair lineName="Copper" srcIndex="1" tarIndex="0" />
+        </line>
+        <line srcDeviceID="68AD1302-987B-4345-ACBA-85BF941DCF20" destDeviceID="47C5901D-2C69-4D1F-B482-DCB7C5D33FD3">
+            <interfacePair lineName="Copper" srcIndex="2" tarIndex="0" />
+        </line>
+        <line srcDeviceID="68AD1302-987B-4345-ACBA-85BF941DCF20" destDeviceID="C5D20467-AF6C-4C5A-A281-4AF4538ECE4F">
+            <interfacePair lineName="Copper" srcIndex="3" tarIndex="0" />
+        </line>
+        <line srcDeviceID="68AD1302-987B-4345-ACBA-85BF941DCF20" destDeviceID="85F65407-FB24-4104-84AE-FD4666C2A7A8">
+            <interfacePair lineName="Copper" srcIndex="4" tarIndex="0" />
+        </line>
+        <line srcDeviceID="85F65407-FB24-4104-84AE-FD4666C2A7A8" destDeviceID="9AB04572-74A0-4BA0-8A7A-56E0A20ACA86">
+            <interfacePair lineName="Copper" srcIndex="1" tarIndex="0" />
+        </line>
+        <line srcDeviceID="85F65407-FB24-4104-84AE-FD4666C2A7A8" destDeviceID="68BE982F-D699-4427-86E6-3ACA82890E47">
+            <interfacePair lineName="Copper" srcIndex="2" tarIndex="0" />
+        </line>
+        <line srcDeviceID="85F65407-FB24-4104-84AE-FD4666C2A7A8" destDeviceID="3CC165E8-D09C-44F5-A561-A8A5D5838F1C">
+            <interfacePair lineName="Copper" srcIndex="3" tarIndex="0" />
+        </line>
+    </lines>
+    <shapes>
+    </shapes>
+    <txttips>
+        <txttip left="400" top="40" right="526" bottom="66" content="192.168.1.0/24" fontname="Consolas" fontstyle="0" editsize="100" txtcolor="-16777216" txtbkcolor="-1" charset="1" />
+        <txttip left="130" top="110" right="319" bottom="136" content="vlan10 dept1 isolated" fontname="Consolas" fontstyle="0" editsize="100" txtcolor="-16777216" txtbkcolor="-1" charset="1" />
+        <txttip left="130" top="290" right="292" bottom="316" content="vlan20 dept2 group" fontname="Consolas" fontstyle="0" editsize="100" txtcolor="-16777216" txtbkcolor="-1" charset="1" />
+        <txttip left="630" top="290" right="792" bottom="316" content="vlan30 dept3 group" fontname="Consolas" fontstyle="0" editsize="100" txtcolor="-16777216" txtbkcolor="-1" charset="1" />
+        <txttip left="640" top="520" right="766" bottom="546" content="vlan100 Server" fontname="Consolas" fontstyle="0" editsize="100" txtcolor="-16777216" txtbkcolor="-1" charset="1" />
+    </txttips>
+</topo>

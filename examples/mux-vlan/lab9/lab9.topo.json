@@ -1,0 +1,31 @@
+{
+  "name": "lab9-mux-vlan",
+  "devices": [
+    {"name": "LSW1", "model": "S5700", "x": 430, "y": 240},
+    {"name": "LSW2", "model": "S5700", "x": 430, "y": 560},
+    {"name": "PC1", "model": "PC", "x": 170, "y": 150, "ip": "192.168.1.11", "mask": "255.255.255.0", "gw": "192.168.1.1"},
+    {"name": "PC2", "model": "PC", "x": 170, "y": 330, "ip": "192.168.1.12", "mask": "255.255.255.0", "gw": "192.168.1.1"},
+    {"name": "PC3", "model": "PC", "x": 690, "y": 150, "ip": "192.168.1.13", "mask": "255.255.255.0", "gw": "192.168.1.1"},
+    {"name": "PC4", "model": "PC", "x": 690, "y": 330, "ip": "192.168.1.14", "mask": "255.255.255.0", "gw": "192.168.1.1"},
+    {"name": "PC5", "model": "PC", "x": 170, "y": 520, "ip": "192.168.1.15", "mask": "255.255.255.0", "gw": "192.168.1.1"},
+    {"name": "PC6", "model": "PC", "x": 170, "y": 660, "ip": "192.168.1.16", "mask": "255.255.255.0", "gw": "192.168.1.1"},
+    {"name": "Server1", "model": "Server", "x": 690, "y": 560, "ip": "192.168.1.2", "mask": "255.255.255.0", "gw": "192.168.1.1"}
+  ],
+  "links": [
+    {"a": "LSW1", "b": "PC1", "a_if": "GE0/0/1", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "LSW1", "b": "PC3", "a_if": "GE0/0/2", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "LSW1", "b": "PC2", "a_if": "GE0/0/3", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "LSW1", "b": "PC4", "a_if": "GE0/0/4", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "LSW1", "b": "LSW2", "a_if": "GE0/0/5", "b_if": "GE0/0/1", "type": "Copper"},
+    {"a": "LSW2", "b": "PC5", "a_if": "GE0/0/2", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "LSW2", "b": "PC6", "a_if": "GE0/0/3", "b_if": "Ethernet0/0/1", "type": "Copper"},
+    {"a": "LSW2", "b": "Server1", "a_if": "GE0/0/4", "b_if": "Ethernet0/0/1", "type": "Copper"}
+  ],
+  "labels": [
+    {"text": "192.168.1.0/24", "x": 400, "y": 40},
+    {"text": "vlan10 dept1 isolated", "x": 130, "y": 110},
+    {"text": "vlan20 dept2 group", "x": 130, "y": 290},
+    {"text": "vlan30 dept3 group", "x": 630, "y": 290},
+    {"text": "vlan100 Server", "x": 640, "y": 520}
+  ]
+}

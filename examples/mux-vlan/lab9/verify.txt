@@ -1,0 +1,35 @@
+# 实验（训）9 MUX-VLAN：验证命令（两台交换机）
+#
+# 下发方式：
+#   enspctl run LSW1 --file examples/mux-vlan/lab9/lsw1.cfg --root <lab 目录>
+#   enspctl run LSW2 --file examples/mux-vlan/lab9/lsw2.cfg --root <lab 目录>
+#
+# 每条命令都会校验回显，没被执行会直接报错。
+
+# ---------- LSW1 ----------
+# 1) MUX-VLAN 总表：主/从 VLAN、类型、成员接口
+display mux-vlan
+
+# 2) VLAN 表：确认 10/20/30 是 mux-sub（从 VLAN）、100 是 mux（主 VLAN）
+display vlan
+
+# 3) 各接口的 VLAN 归属与 MUX-VLAN 使能状态
+display port vlan
+
+# 4) 互联口（trunk）放通了哪些 VLAN
+display vlan 10
+
+# ---------- LSW2 ----------
+# 5) 接入侧的 VLAN 归属
+display vlan
+
+# 6) 跨交换机的二层通路：LSW1 上应学到 LSW2 的 MAC（VLAN 10 / GE0/0/5 / dynamic）
+display mac-address
+
+# ---------- 终端侧（PC 的命令行）----------
+# 7) 部门2 内部：PC2（LSW1 GE0/0/3）ping PC5（LSW2 GE0/0/2）—— 期望通
+# 8) 部门1 内部：PC1（LSW1 GE0/0/1）ping PC3（LSW1 GE0/0/2）—— 期望不通
+# 9) 部门之间：PC2 ping PC4（LSW1 GE0/0/4，VLAN30）—— 期望不通
+# 10) 部门到服务器：PC2 ping Server1（LSW2 GE0/0/4，VLAN100）—— 本平台的 S5700
+#     没有 MUX VLAN 共享网关（主 VLAN 不能配三层接口），这一步在本平台不通，
+#     在支持共享网关的新版 VRP 上才通。
