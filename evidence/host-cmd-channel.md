@@ -408,12 +408,25 @@ arrives over a different channel, and it is a named pipe:
 | `WaitNamedPipeW` | one callsite, `0x40a406` — busy-pipe retry |
 | `PeekNamedPipe` | `0x40a605` |
 
-So `eNSP_VBoxServer.exe` is the pipe **client**. It does **not** import
-`CreateNamedPipeW` — and neither does `eNSP_Client.exe`, which imports no
-named-pipe API at all. The component that creates the pipe is therefore
-**unidentified**, which matters: "create the pipe yourself, hand the server a
-device list, get a device id" is the obvious next step and it cannot be planned
-until that is known.
+So `eNSP_VBoxServer.exe` is the pipe **client**, and the pipe is **not** an
+eNSP-internal control channel:
+
+* `eNSP_Client.exe` contains no named-pipe API and not one occurrence of the
+  string `pipe` in any case — it has nothing to do with the pipe;
+* no module in the whole `eNSP` install imports `CreateNamedPipeW`;
+* the only `CreateNamedPipeA` importers are the Inno Setup uninstaller and
+  `log4cxx.dll`, neither of which is a candidate.
+
+The likely owner is **VirtualBox**: `\\.\pipe\<name>` is exactly how a VM's
+serial port is exposed on Windows, which is the same pipe `agentd-protocol.md`
+§1 uses for the boot handshake. On that reading this is the serial pipe again —
+VirtualBox creates it, and anything that wants to talk to the guest connects as
+a client — and the static-config path in §1 and §3 is not a separate channel to
+reproduce but the channel `ensp-mcp` already implements.
+
+Either way the practical conclusion holds: **the pipe is not how device ids get
+into the server.** Its device table is populated some other way, and that is
+what blocks `StartDevice` from doing anything useful.
 
 The message framing is unknown too. What is established is only that the
 server, as the reader, does `PeekNamedPipe` before reading, i.e. the protocol
