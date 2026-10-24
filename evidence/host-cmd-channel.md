@@ -207,9 +207,15 @@ fields placed as below:
 | `+0x04` | `WORD` BE | opcode |
 | `+0x06` | `WORD` | payload word |
 | `+0x08` | `DWORD` | device id — the key into the server's device table |
-| `+0x6f0` | `wchar_t[]`, UTF-16, NUL-terminated | device model, matched against `L"AR"`, `L"AC"`, `L"AP"`, `L"AD"`, `L"R230"`, `L"R250"` |
-| `+0x7d4` | `wchar_t[]` | device / VM name |
+| `+0x6f0` | `wchar_t[]`, UTF-16, NUL-terminated | one of the two device strings; hashed (not parsed) to choose a table bucket |
+| `+0x7d4` | `wchar_t[]`, UTF-16, NUL-terminated | the other device string; compared against `L"AR"`, `L"AC"`, `L"AP"`, `L"AD"`, `L"R230"`, `L"R250"` to pick the family |
 | `+0xa16` | `WORD` | — |
+
+Which of `+0x6f0`/`+0x7d4` is the device key and which is the model is **not
+settled**: the id lookup fails first, so a probe cannot tell them apart, and
+the two readings disagree on which one is hashed into a bucket. Both are wide
+strings, and that is the part that matters — ASCII in either field leaves the
+family comparison unmatched.
 
 The model string is **wide**, and that is what makes a request look "ignored":
 ASCII in a `wchar_t` field leaves the model unmatched, the handler goes off to
@@ -374,12 +380,21 @@ read as `manual=0` and silently took the wrong branch.
   `0x48644e`; the allocator in §5c cannot produce 65514, but that says nothing
   about the client.
 
-**Settled negative:** the second channel is not needed. The string-command
-dispatcher at `0x41dec0` — the one that would consume the `"@@@@%d"` template
-(`0x45e398`) and the map built at `0x41cd20` with the client-side command names
-(`IsRegister`, `Init`, `CreateDevice`, `CleanResource`, …) — has **no callers**
-in this binary, so the command channel does not use it and a GUI-free
-replacement does not have to reproduce it.
+**Retracted: this channel is live.** An earlier revision of this file claimed
+the string-command dispatcher at `0x41dec0` was dead code because nothing
+`call`s it directly. That was wrong, and the mistake is worth naming: a direct
+`call`-target count does not see virtual dispatch. `0x41dec0` is **slot 14 of
+the vtable at `0x465424`** (slot address `0x46545c`), and that vtable is
+installed by the constructor at `0x41d8d8` and `0x41d97a`. So the string
+commands (`IsRegister`, `CreateDevice`, `Init`, `CleanResource`, …) are
+reachable, and they are the most likely way the client hands the server its
+device list — see §10.
+
+The other half of the earlier claim does still hold: the server does not learn
+its devices from VirtualBox. There is no `list vms`, `showvminfo`, `startvm` or
+`controlvm` string in the binary, and while it imports `CoInitialize` and
+`CoUninitialize` it does **not** import `CoCreateInstance`, so it cannot be
+driving the VirtualBox COM API either.
 
 ## 8. Two traps
 
@@ -479,3 +494,23 @@ through this channel.
 For this project the actionable part is the clone line: `ensp-mcp` now clones
 `--snapshot <name> --options link` when the base has a snapshot, instead of
 copying the base image per device.
+
+### The VM name does not come from the request
+
+That is why sweeping request offsets for a device name finds nothing. The name
+in `unregistervm` is built from the agent object:
+
+| Field | Built by |
+| --- | --- |
+| `agent+0x54` | `swprintf(L"%s\\%s", [0x477abc], X)` — format `0x45ddf8`; this becomes `--name` |
+| `agent+0x50` | `swprintf(L"%s\\%s\\", [0x477ab8], X)` — format `0x45dde8` |
+| `agent+0x44` | **not** formatted — a virtual call on the singleton that `0x42e607` returns (`mov eax,0x474a44; ret`) |
+
+`0x474a44` is an iterator that yields the next string on each call, and the
+agent constructor calls it eight times to fill `+0x30`, `+0x44`, `+0x48`,
+`+0x4c`, `+0x50`, `+0x54`, `+0x58`, `+0x5c`. With an empty chain every one of
+those is empty, so `unregistervm` is reached with no name, fails with
+"VM name required", and the request answers 45 long before `clonevm`.
+
+**Open:** what fills `0x474a44`. Not VirtualBox (§7), not this channel's table
+(§10). Since the string-command dispatch is live, the client is what remains.
