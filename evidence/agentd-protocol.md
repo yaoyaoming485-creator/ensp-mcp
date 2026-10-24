@@ -205,6 +205,16 @@ exact format of that announcement is still unknown. Until it does, the VRP
 sends keepalives but never ARPs for the peer, so the link is "up" while no
 IP traffic flows.
 
+Where the answer comes from is no longer a guess. `eNSP_VBoxServer` does not
+answer the probe: `CInterface::ProcData` clears a counter, records the sender,
+then forwards the datagram to a **client address** registered on that interface
+(`sendto` at `0x4103c0`). That client is registered by a 16-byte control
+message — type 0 on `CInterface::ProcCtrlCmd` (`0x410470`), which also sends a
+4-byte status back to the caller. So a replacement host can stand in for the
+GUI: register on the interface socket, receive the probes, answer them itself.
+*What* to answer is the remaining unknown, and it lives in `eNSP_Client.exe`.
+See [`host-cmd-channel.md`](host-cmd-channel.md) §5b.
+
 `dhcp_config()` (`0x08049ae4`) shows the machinery the guest uses for
 configuration: a UDP socket bound to `0.0.0.0:60001` (it walks up the port
 numbers until one is free), and `send_cfg_msg()` (`0x08049814`) sending a

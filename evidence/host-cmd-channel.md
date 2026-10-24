@@ -162,13 +162,18 @@ This is a single fixed-size request/reply protocol on a datagram socket:
 | --- | --- | --- |
 | socket | `0x40823c` | `WS2_32!#23` = `socket`; handle stored at object `+0x4c` |
 | receive | `0x40853a` | `WS2_32!#17` = `recvfrom` |
-| reply | `0x408ab7` | `push 0x10; push &addr; push 0; push 0x114; push buf; push sock; call #20` = `sendto(sock, buf, 276, 0, &addr, 16)` |
+| reply | `0x408ab7` | `push 0x10; push &addr; push 0; push 0x114; push buf; push sock; call #20` = `sendto(sock, buf, 276, 0, &addr, 16)`. 276 is the StartDevice reply only — the length is per-op, see §5 |
 | request size | `0x4086d0` | `push 0xa3c` (`operator new`), then `rep movs` of `0x28a` dwords = **2600 bytes** |
 | client send | `0x4eb4f7` | `push 0xa28; ...; call sendto` |
 
 One datagram is one message: no length prefix, no NUL, no stream framing. The
-client then reads the reply with a `0x1000` buffer at `0x4eb522`, where the
-server writes exactly `0x114` = 276 bytes.
+client then reads the reply with a `0x1000` buffer at `0x4eb522`.
+
+The reply length is **not** fixed. `0x114` is what StartDevice returns; the
+memory-status opcode returns 10 bytes and the file-transmit query 296. Each
+handler passes its own length to `sendto`, and the destination is a sockaddr
+kept in the server object (`+0x54` for the memory-status reply at
+`0x409c33`), i.e. the last requester — not an address rebuilt from the request.
 
 The embedded TinyXML is used for device configuration files and XML printing.
 It has nothing to do with this socket.
@@ -192,22 +197,76 @@ The table at `0x4086b0` holds six entries, and the rest are compare chains —
 and `0x4d1` (1233) at `0x4086a3`. Anything else returns the opcode unchanged
 without doing work.
 
-| Opcode | Handler |
-| --- | --- |
-| 5, 6, 7 | `0x4086d0` (via `0x408620`) |
-| 8 | `0x408e10` (via `0x40862f`) |
-| 9 | `0x409100` (via `0x40863e`) |
-| 10 | `0x4093e0` (via `0x40867c`) |
-| 19 | `0x409c60` |
-| 21 | `0x4093e0` (same as 10) |
-| 22 | `0x409a00` |
-| 25 | `0x4096f0` |
-| 1233 | `0x409be0` |
+| Opcode | Handler | Method (from the strings it logs) | Reply |
+| --- | --- | --- | --- |
+| 5, 6, 7 | `0x4086d0` (via `0x408620`) | `CAgentServer::StartDevice` | 276 |
+| 8 | `0x408e10` (via `0x40862f`) | `StopDevice` | — |
+| 9 | `0x409100` (via `0x40863e`) | `DeleteDevice` | — |
+| 10 | `0x4093e0` (via `0x40867c`) | `SyncCfg` | — |
+| 19 | `0x409c60` | `QueryFileTransmitPort` | 296 |
+| 21 | `0x4093e0` (same as 10) | `SyncCfg` | — |
+| 22 | `0x409a00` | `Shutdown` | 276 |
+| 25 | `0x4096f0` | `ExportCfg` | — |
+| 1233 | `0x409be0` | `GetMemoryStatus` | 10 |
 
-`0x4086d0` only allocates `0xa3c` and copies the 2600-byte request, i.e. it is
-the enqueue step, so 5/6/7 sharing it says nothing about their meanings. **The
-per-opcode meaning is not established by this table** and the names used by the
-client (`StartDevice`, `StopDevice`, …) cannot be attached to numbers from here.
+The method names are the ones the handlers themselves print, so they are read
+off the binary rather than guessed from the client's command names. Note that
+5/6/7 share one entry point (`0x4086d0` only allocates `0xa3c` and copies the
+2600-byte request — the enqueue step), so a single entry does not mean a single
+command: the worker that picks the request up dispatches again.
+
+`SyncCfg` (10 and 21) and `ExportCfg` (25) matter beyond this channel: they are
+the two ways the eNSP client pushes configuration into a guest at run time, and
+`agentd-protocol.md` §③f names them as the suspected carrier of the peer
+address.
+
+## 5b. The 16-byte control message on the interface socket
+
+`CInterface::ProcData` (`0x410180`) checks the message type first — `ntohl` at
+`0x41029a`, `cmp eax,0x4d2` at `0x4102a0` — and routes that one type through
+`vtable+0x10` to `CInterface::ProcCtrlCmd` (`0x410470`). Everything else is
+interface traffic:
+
+* a 4-byte datagram clears the counter at `CIface+0x08` (`0x410351`);
+* any datagram copies its source sockaddr into `CIface+0x30`
+  (`0x410367`-`0x41037f`);
+* if a client address is registered (`CIface+0x22 != 0`) the datagram is
+  forwarded to it: `sendto(CIface+0x10, buf, len, 0, CIface+0x20, 16)`
+  (`0x4103c0`).
+
+So the server never answers the "where is my peer" probe itself — it forwards
+it. `ProcCtrlCmd` takes a 16-byte message and accepts exactly two types:
+
+| Field | Meaning |
+| --- | --- |
+| `+0x00` | type, big-endian: `0` or `1234` (`0x4d2`) |
+| `+0x04` | — |
+| `+0x08` | address, network order |
+| `+0x0c` | port, big-endian |
+
+* **type 0** sends a 4-byte status back to the sender (`sendto` at `0x41055e`;
+  the payload is `0` or `0xffffffff` once `CIface+0x08` has been incremented
+  past 10), then registers the sender as the client: `htons(ntohl(msg+0xc))`
+  into `CIface+0x22` (`0x4105ee`) and `msg+0x8` verbatim into `CIface+0x24`
+  (`0x410608`).
+* **type 1234** writes the peer instead: `ntohl(msg+0xc)` into `CIface+0x00`
+  and `ntohl(msg+0x8)` into `CIface+0x04` (`0x4104c7`-`0x4104f6`), as two
+  host-order dwords rather than a sockaddr.
+
+This is the interception point a GUI-free lab needs: send type 0 to an
+interface socket, and that interface's probes start arriving at your address.
+What the eNSP client then *replies to the guest* is still not known — see §7.
+
+## 5c. The port numbers the server hands out
+
+When `manual == 0` the port it picks comes from a base table at `0x473224`,
+13 words: `2001 3001 4001 5001 6001 7001 8001 9001` then
+`60001 61001 62001 63001 64001`. Observed picks — 4474, 61793, 7390, 9904,
+9368, 64824 — all sit in those ranges.
+
+`[con_server] MNG_PORT` (65514) is outside every one of them, so the allocator
+can never collide with it. A `manual=1` port is whatever the ini says and can
+therefore collide with anything, `MNG_PORT` included.
 
 ## 6. Starting it standalone
 
@@ -230,11 +289,35 @@ read as `manual=0` and silently took the wrong branch.
 
 ## 7. Not established
 
-* The meaning of opcodes 5-10, 19, 21, 22, 25, 1233 (see §5).
-* The layout of the 2600-byte request beyond `+4` = opcode; the reply's fields.
+* The layout of the 2600-byte request beyond `+4` = opcode, and the fields of
+  each reply.
+* **What the eNSP client answers the guest.** `ProcCtrlCmd` type 0 registers
+  the caller as the client and `ProcData` forwards the probe, so the reply is
+  produced outside this binary; its bytes are still unknown. This is the last
+  piece of `agentd-protocol.md` §③c.
+* Who reads the peer dwords at `CIface+0x00`/`+0x04`. `ProcData` does not, so
+  either another routine does or they are written for a path not traced yet.
+* Which port an interface socket (`CIface+0x10`/`+0x14`) binds to. It is not
+  written back to any ini, so a caller that wants to register as the client has
+  to know it some other way — most likely it is the `dest:` port the host
+  itself wrote into the guest's `resource.cfg`.
 * Whether `[con_server] MNG_PORT` is ever bound by the client. It is read at
-  `0x48644e`, but the command port is a different value, so any claim that the
-  two collide is unconfirmed either way.
+  `0x48644e`; the allocator in §5c cannot produce 65514, but that says nothing
+  about the client.
 * The second channel behind `"@@@@%d"` (`0x45e398`) and the map built at
   `0x41cd20`, which the client-side command names (`IsRegister`, `Init`,
   `CreateDevice`, `CleanResource`, …) are thought to use. Not traced.
+
+## 8. The log lies while the process runs
+
+`%LOCALAPPDATA%\eNSP\Log\VBoxServer_<date>.log` is **not** flushed while the
+server runs. A live process left the file's timestamp sitting at the moment of
+the previous run for over an hour, with the process healthy and listening the
+whole time.
+
+So "no new `[ERROR]` lines" is not evidence that a request was handled — or
+that startup succeeded. Judge startup by the process and its listening socket,
+and judge a request by its reply. The lines do appear once the process exits.
+
+The server also has its own logger (`0x4256c0`) and does not use
+`log4cxx.xml`; `log4cxx.dll` in that directory belongs to something else.
