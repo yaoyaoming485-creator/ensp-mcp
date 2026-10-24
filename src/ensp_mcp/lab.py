@@ -377,6 +377,32 @@ class Lab:
         out = self._run(["list", "vms"], timeout=120)
         return f'"{dev.vm}"' in out
 
+    def base_snapshot(self) -> str | None:
+        """The snapshot eNSP clones devices from, if the base has one.
+
+        The eNSP client does not copy the base disk for every device: it runs
+        ``clonevm AR_Base --snapshot AR_Base_Link --options link`` (format
+        string at ``0x460018`` in ``eNSP_VBoxServer.exe``), so every device is
+        a linked clone of the same snapshot.  Doing the same makes creating a
+        lab take seconds instead of copying the base image per device.
+
+        Older or repackaged installs may not have the snapshot, so this is
+        best effort and never fatal.
+        """
+        try:
+            out = self._run(["snapshot", self.base_machine(), "list"],
+                            timeout=120)
+        except LabError:
+            return None
+        for line in out.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("Name:"):
+                continue
+            name = stripped.split(":", 1)[1].split("(", 1)[0].strip()
+            if name:
+                return name
+        return None
+
     def create_vms(self) -> None:
         """Clone one VM per device out of eNSP's base machine."""
         # Only the *missing* VMs need the base machine. The base is eNSP's own
@@ -389,14 +415,19 @@ class Lab:
             print("  all device VMs already exist, skipped")
             return
         base = self.base_machine()
+        snapshot = self.base_snapshot()
         for dev in missing:
             folder = self.root / "vms" / dev.name
             folder.mkdir(parents=True, exist_ok=True)
-            print(f"  {dev.vm}: cloning from {base} ...")
-            self._run([
-                "clonevm", base, "--name", dev.vm, "--register",
-                "--basefolder", str(folder),
-            ])
+            args = ["clonevm", base]
+            if snapshot:
+                print(f"  {dev.vm}: linked clone from {base}/{snapshot} ...")
+                args += ["--snapshot", snapshot, "--options", "link"]
+            else:
+                print(f"  {dev.vm}: full clone from {base} ...")
+            args += ["--name", dev.vm, "--register",
+                     "--basefolder", str(folder)]
+            self._run(args)
             self._configure_vm(dev)
 
     def _configure_vm(self, dev: LabDevice) -> None:

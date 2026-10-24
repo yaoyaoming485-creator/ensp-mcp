@@ -417,12 +417,11 @@ eNSP-internal control channel:
 * the only `CreateNamedPipeA` importers are the Inno Setup uninstaller and
   `log4cxx.dll`, neither of which is a candidate.
 
-The likely owner is **VirtualBox**: `\\.\pipe\<name>` is exactly how a VM's
-serial port is exposed on Windows, which is the same pipe `agentd-protocol.md`
-§1 uses for the boot handshake. On that reading this is the serial pipe again —
-VirtualBox creates it, and anything that wants to talk to the guest connects as
-a client — and the static-config path in §1 and §3 is not a separate channel to
-reproduce but the channel `ensp-mcp` already implements.
+The owner is **VirtualBox**, and the binary says so itself: the server formats
+`modifyvm %s --uartmode%d server \\.\pipe\%s` (wide string `0x462888`). A
+Windows serial port is exposed as `\\.\pipe\<name>` and `server` means the
+*VBox process* creates it — so this is the same pipe `agentd-protocol.md` §1
+uses for the boot handshake, not a channel of its own.
 
 Either way the practical conclusion holds: **the pipe is not how device ids get
 into the server.** Its device table is populated some other way, and that is
@@ -432,3 +431,51 @@ The message framing is unknown too. What is established is only that the
 server, as the reader, does `PeekNamedPipe` before reading, i.e. the protocol
 is length-prefixed or otherwise self-delimiting rather than fixed-size like the
 UDP channel.
+
+## 10. How a device is actually created
+
+`StartDevice` does not spawn anything itself: it shells out to `VBoxManage`.
+Three wide-string templates in `.rdata` are the whole recipe.
+
+| Template | VA |
+| --- | --- |
+| `unregistervm %s --delete` | `0x462850` |
+| `clonevm AR_Base --snapshot AR_Base_Link --options link --name "%s" --basefolder "%s" --register` | `0x460018` |
+| `modifyvm %s --uartmode%d server \\.\pipe\%s` | `0x462888` |
+
+The base machine is chosen by device family, each with its own template:
+
+| Model | Base |
+| --- | --- |
+| `AR` | `AR_Base` |
+| `AC` | `WLAN_AC_Base` (`0x462d08`) |
+| `AD` | `WLAN_AD_Base` (`0x462e40`) |
+| `AP` | `WLAN_AP_Base` (`0x463428`) |
+| `SAP` | `WLAN_SAP_Base` (`0x463af0`) |
+
+`CreateProcess` is at `0x414070`. The `--snapshot ... --options link` pair is
+the important detail: a device is a **linked clone** of a snapshot of the base,
+so creating one does not copy the base disk.
+
+That the command really runs is visible without a debugger: the server's own log
+`...\vboxserver\log\VBoxManage.log` gains
+
+```
+VBoxManage.exe: error: VM name required
+```
+
+after a `StartDevice` attempt — `unregistervm` was reached with an empty name,
+because the request field carrying the VM name was not the one filled in.
+
+The device table those commands are looked up in lives at `CAgentServer+0x30`
+(buckets at `+0x34`, bucket count at `+0x38`); an entry is
+`{name@0x00, next@0x08, id@0x0c}` and the bucket is `id % count`
+(`0x4089ca`). The insert/delete helper is `0x40a1f0`, called from exactly two
+places — the `StartDevice` and `DeleteDevice` workers — so the table is **not**
+filled from VirtualBox's VM list, from an ini, or from the map at `0x41cd20`.
+A lookup miss is therefore the normal state before any device has been created
+through this channel.
+
+For this project the actionable part is the clone line: `ensp-mcp` now clones
+`--snapshot <name> --options link` when the base has a snapshot, instead of
+copying the base image per device.
