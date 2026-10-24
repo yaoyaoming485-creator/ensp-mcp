@@ -151,10 +151,15 @@ def _pipe_write(handle, data: bytes) -> int:
 class SerialPipeServer:
     """Act as the named-pipe server so VirtualBox dials us.
 
-    A VirtualBox host pipe created by VBox itself only grants the host
-    GENERIC_READ (RDWR fails with ERROR_ACCESS_DENIED).  Configuring the UART
-    with server="false" inverts the roles: VirtualBox opens the pipe as a
-    client and we own the instance and its security descriptor.
+    Opening a VBox-created host pipe read-write (O_RDWR) from the host does
+    work while the pipe instance is free; an earlier note claiming it only
+    granted GENERIC_READ was too absolute.  The exact trigger for
+    ERROR_ACCESS_DENIED is not pinned down; the hypothesis is that the pipe
+    is single-instance, so the denial appears once it is already connected or
+    owned.  Configuring the UART with server="false" is still preferred for
+    robustness: VirtualBox opens the pipe as a client and we own the instance
+    and its security descriptor, so a guest that connects first cannot lock
+    us out.
     """
 
     def __init__(self, pipe_path: str):

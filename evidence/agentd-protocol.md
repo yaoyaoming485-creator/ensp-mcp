@@ -458,13 +458,26 @@ see `scripts/patch_resource.py`.
 ## 3. Bringing a guest up without the eNSP client
 
 The eNSP client's own device VMs use
-`uartmode2="server,\\.\pipe\<name>"`. A VirtualBox-created host pipe only
-grants the host **read** access — opening it `O_RDWR` fails with
-`ERROR_ACCESS_DENIED` (13), while `O_RDONLY` succeeds.
+`uartmode2="server,\\.\pipe\<name>"`. Opening such a VirtualBox-created
+server pipe `O_RDWR` from the host **does** work while the instance is
+free: `os.open(r"\\.\pipe\OSPF_R1", os.O_RDWR | os.O_BINARY)` succeeded,
+and reads and writes both worked across many full device boots — the same
+held for another VBox-created name, `\\.\pipe\R1-COM1`. An earlier revision
+of this note said a VBox-created pipe only grants the host read access and
+that `O_RDWR` always fails with `ERROR_ACCESS_DENIED` (13); that was too
+absolute.
 
-Inverting the roles fixes it. With the UART configured as
+The denial is still seen, but the exact condition that triggers it was
+**not** pinned down. The hypothesis is that a VirtualBox host pipe is a
+single-instance named pipe, so the failure comes from that one instance
+already being connected or owned — the guest side has connected, or another
+process holds it — rather than from the pipe's ACL being read-only.
+
+`server="false"` is still the recommended arrangement, for robustness
+rather than as a hard requirement. With the UART configured as
 `server="false" hostMode="HostPipe"`, **VirtualBox connects to a pipe the
-host creates**, so the host owns the instance and its ACL:
+host creates**, so the host owns the instance and its security descriptor
+and a guest that connects first cannot lock the host out:
 
 ```xml
 <Port slot="1" enabled="true" IOBase="0x2f8" IRQ="3" server="false"
