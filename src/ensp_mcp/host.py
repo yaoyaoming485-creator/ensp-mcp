@@ -171,17 +171,21 @@ class UdpRelay:
             self.received += 1
             # A four-byte datagram is the interface's link handshake, not a
             # question.  The guest's VPORT process sends `htonl(1)` per
-            # interface and validates whatever comes back in
-            # `0x0804bbb0`: the datagram must be exactly four bytes and
-            # `ntohl(*buf)` must be 1, 2 or 3 - anything else, including a
-            # peer address, returns -1 and is dropped (confirmed by reading
-            # the function in the decrypted `dev0`).
+            # interface, once a second, and validates whatever comes back in
+            # `0x0804bbb0`: four bytes whose big-endian value is 1, 2 or 3 -
+            # anything else, including a peer address, returns -1 and is
+            # dropped (read out of the decrypted `dev0`).
+            #
+            # The answer that actually keeps the interface usable is 2.  The
+            # port holds a counter at `0x08044a0 + 4*port` which the sender
+            # bumps on every handshake (`0x0804bd9a`); while it is above 4 the
+            # port sits in control state and every datagram longer than four
+            # bytes is dropped, which is why only handshakes ever get through.
+            # A `2` from the host resets that counter to 0 (`0x0804bcd8`), and
+            # a counter of 4 or less puts the port back into data state.
             if len(data) == 4:
-                # Answer with 1, which is what sets the port's link flag on
-                # the guest side, and pass the datagram on as well so the
-                # peer's own message can come back.
                 try:
-                    s.sendto(b"\x00\x00\x00\x01", peer)
+                    s.sendto(b"\x00\x00\x00\x02", peer)
                     self.answered += 1
                 except OSError as exc:
                     self.log(f"udp relay: cannot answer interface {iface}: {exc}")

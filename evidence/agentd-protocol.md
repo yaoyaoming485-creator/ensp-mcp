@@ -278,10 +278,22 @@ the decrypted `dev0`) and accepts exactly four bytes whose big-endian value is
 804bca4  jne  0x804bbd4        ; anything else -> -1
 ```
 
-So the host answers with `00 00 00 01`, which sets the port's link flag and
-makes the guest report `3` back. Answering with the peer's address is silently
-discarded — which is what this implementation used to do, and a good candidate
-for why the interfaces came up without carrying traffic.
+So the host answers with `00 00 00 02`. The value that matters is not the
+handshake's own `1`: each port keeps a counter at `0x08044a0 + 4*port` which
+the guest bumps every time it sends a handshake (`0x0804bd9a`), and while that
+counter is above 4 the port is in **control state** — every datagram longer
+than four bytes is dropped. A `2` from the host resets the counter to 0
+(`0x0804bcd8`), which puts the port back into **data state**:
+
+| Received | Effect |
+| --- | --- |
+| `1` | sets the port flag and makes the guest report `3` back |
+| `2` | resets the counter to 0 — this is the one that keeps the port usable |
+| `3` | sets the port flag only |
+
+Answering with the peer's address is silently discarded — which is what this
+implementation used to do, and a good candidate for why the interfaces came up
+without carrying traffic.
 
 The peer's address is therefore **not carried on this path at all**. The guest
 only ever talks to its `dest:` — the host — and the host relays each datagram to
