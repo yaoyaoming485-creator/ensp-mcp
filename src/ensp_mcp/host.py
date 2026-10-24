@@ -169,22 +169,19 @@ class UdpRelay:
             except OSError:
                 break
             self.received += 1
-            # A four byte packet is an address: the device asks "where is my
-            # peer?" with 0.0.0.1, and the host answers with the peer's
-            # address (that is what the eNSP host does - it parses the
-            # captured bytes as an IP with "%u.%u.%u.%u").  Without the
-            # answer the interface never comes up and the device dies a
-            # couple of minutes later.
+            # A four-byte datagram is the interface's link handshake, not a
+            # question.  The guest's VPORT process sends `htonl(1)` per
+            # interface and validates whatever comes back in
+            # `0x0804bbb0`: the datagram must be exactly four bytes and
+            # `ntohl(*buf)` must be 1, 2 or 3 - anything else, including a
+            # peer address, returns -1 and is dropped (confirmed by reading
+            # the function in the decrypted `dev0`).
             if len(data) == 4:
-                # The device asks once a second: four bytes that the eNSP host
-                # parses as an address ("%u.%u.%u.%u").  It sends 0.0.0.1 and
-                # 0.0.0.2 - it does not know its peer yet, so the host has to
-                # tell it.  The exact answer layout is still unknown, so the
-                # peer's address is sent (the device keeps asking until one
-                # of the forms fits) and the request is also passed on, so
-                # the peer's own reply can come back.
+                # Answer with 1, which is what sets the port's link flag on
+                # the guest side, and pass the datagram on as well so the
+                # peer's own message can come back.
                 try:
-                    s.sendto(socket.inet_aton(peer_ip), peer)
+                    s.sendto(b"\x00\x00\x00\x01", peer)
                     self.answered += 1
                 except OSError as exc:
                     self.log(f"udp relay: cannot answer interface {iface}: {exc}")

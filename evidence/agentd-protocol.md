@@ -263,11 +263,30 @@ sendto(sock, buf, len, 0, interface->sockaddr_at_0x20, 16);
 — the destination is the address the device asked for, the port comes from
 the host's own configuration.
 
-What the device actually sends is four bytes, once a second, per
-interface: `00 00 00 01` and `00 00 00 02` — it is asking the hub for
-something it does not know yet, and it keeps asking. The answer's exact
-layout is the one thing still missing; the address of the peer is the
-obvious candidate, and this implementation sends it.
+What the device actually sends is four bytes per interface — `00 00 00 01` on
+interface 0, `00 00 00 02` on interface 1 — and it is a **link handshake, not a
+question**. The receiver lives in the guest's VPORT process (`0x0804bbb0`, in
+the decrypted `dev0`) and accepts exactly four bytes whose big-endian value is
+`1`, `2` or `3`; every other value returns `-1` and is dropped:
+
+```asm
+804bc29  call ntohl
+804bc2e  cmp  eax,0x1
+804bc31  jne  0x804bc88        ; try 2, then 3
+804bc92  cmp  eax,0x2
+804bca1  cmp  eax,0x3
+804bca4  jne  0x804bbd4        ; anything else -> -1
+```
+
+So the host answers with `00 00 00 01`, which sets the port's link flag and
+makes the guest report `3` back. Answering with the peer's address is silently
+discarded — which is what this implementation used to do, and a good candidate
+for why the interfaces came up without carrying traffic.
+
+The peer's address is therefore **not carried on this path at all**. The guest
+only ever talks to its `dest:` — the host — and the host relays each datagram to
+the peer. Without an accepted answer the guest logs `VPORT_Hal_PortEnable
+failed!` and the interface never comes up.
 
 This is the per-interface traffic only. The same binary's *control* side — the
 socket the eNSP client uses to create and start devices — is a different
@@ -275,13 +294,13 @@ channel and is described in [`host-cmd-channel.md`](host-cmd-channel.md).
 
 ### ③f Where it still breaks
 
-The VRP never ARPs for its peer, so only the 4-byte keepalives travel.
-The peer's address is in none of the places the guest reads at boot: not in
-`resource.cfg` (eNSP's own client leaves that file untouched — it keeps the
-stock `192.168.1.x` addresses), not in the handshake, not in `db.dat`. The
-eNSP client injects it at run time (`CAgentServer::ExportCfg`,
-`CAgentServer::SyncCfg`, `CAgentStaticCfgProcess::CfgService`), and that
-injection is the one piece still missing.
+The VRP never ARPs for its peer, so only the 4-byte handshakes travel — and
+those are answered correctly now (see ③b). The earlier reading, that the host
+has to *inject* a peer address the client supplies at run time, rested on that
+handshake carrying an address. It does not: the value is a 1/2/3 handshake, and
+the guest never learns its peer at all — it sends everything to `dest:` and the
+host relays. So the missing piece is not an injection but whatever the VRP
+still wants before it will originate traffic.
 
 That the guest cannot be configured with it either is now measured, not
 assumed. The host component does compute per-device `peerip` / `peerport`
