@@ -386,13 +386,34 @@ address `CIface+0x30` (`0x410302`, `0x41bf04`), four go to the client address
 tunnel subsystems. Not one builds a destination from the peer fields, and
 nothing in `0x40f000`-`0x411200` assembles a sockaddr out of them.
 
-So the peer endpoint reaches the guest by **configuration**, not by an answer
-on this channel. `peerip` (`0x465290`) and `peerport` (`0x465298`) are generated
-per device by the routine starting at `0x41efea`, which walks the device chain
-(`[esi+0x28]`) and inserts one pair per device (`0x420f90`), taking the port
-from `[ebp+esi*2+0x200]`. Where those pairs are delivered is not established,
-but that is the mechanism — and `agentd-protocol.md` §③e already records both
-names as the peer's endpoint.
+So the peer endpoint is written to a **host-side** `resource.cfg`: the routine at
+`0x41efea` walks the device chain and sets `peerip` / `peerport` per device, and
+`0x41ec90` reopens `<device dir>/resource.cfg` (`0x45e34c`, mode `"r+b"` at
+`0x465250`) and writes the tree back as XML (`0x4210b0`; templates `<%s`,
+`%s="%s"`, ` />`, `</%s>`). The key pool at `0x465260` is `offset`, `systemmac`,
+`localip`, `localport`, `name`, `peerip`, `peerport`.
+
+That file is **not** what the guest reads, and this is measured rather than
+assumed:
+
+* the guest's `resource.cfg` is plain text — `interface[0] =
+  socket[local:192.168.1.3:10000 dest:192.168.1.104:30000 role:client
+  protocol:udp][port_phy ...]` — a different format from the XML above (the
+  stock template is embedded in the guest image at offset `0x8900f83`);
+* the strings `peerip` does appear in the guest disk, but every hit is an
+  unrelated debug line from BFD and IPsec (`"ADD a new hash node (peerip = %s,
+  nexthop = %s)"`, `"esap_ipsec_dbg.c ... peerip:%d"`), never a config key;
+* `peerport` does not occur in the guest disk at all;
+* `agentd` itself contains neither name.
+
+None of the host-side pairs ever reached disk on this machine either: no
+`devices/` directory and no `resource.cfg` exist under
+`%LOCALAPPDATA%\eNSP\VBoxServer`, because no device has ever been registered
+through this channel.
+
+**So the guest cannot learn its peer from configuration.** It has only the
+`local:`/`dest:` sockets; the peer has to arrive over the wire, and §7's
+resolved negative says this binary never sends it.
 
 One discrepancy stays open: `ProcCtrlCmd` writes the peer via
 `[esi+4]+idx*4` → `[obj]`/`[obj+4]`, and that is the same object whose sockets

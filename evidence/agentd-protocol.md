@@ -283,6 +283,15 @@ eNSP client injects it at run time (`CAgentServer::ExportCfg`,
 `CAgentServer::SyncCfg`, `CAgentStaticCfgProcess::CfgService`), and that
 injection is the one piece still missing.
 
+That the guest cannot be configured with it either is now measured, not
+assumed. The host component does compute per-device `peerip` / `peerport`
+pairs and writes them as XML into `<device dir>/resource.cfg`, but the guest's
+`resource.cfg` is a different file in a different format — plain
+`interface[N] = socket[local:… dest:…]` text — and in the guest image the
+string `peerip` occurs only inside unrelated BFD and IPsec debug messages,
+while `peerport` does not occur at all. See
+[`host-cmd-channel.md`](host-cmd-channel.md) §7.
+
 The crash itself is in the VRP's main thread — `cap.log` in the guest
 holds the backtrace (`./dev1() [0x815903d]` … `__libc_start_main+0x133`).
 
