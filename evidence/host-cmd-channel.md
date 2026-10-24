@@ -195,6 +195,45 @@ and the length is **per-op**, not fixed: 276 for most commands, 296 for
 The destination is the sockaddr of the last requester, kept in the server
 object (`+0x54`), not an address rebuilt from the request bytes.
 
+### 4b. The request body, for `StartDevice`
+
+The 2600-byte request is not opaque. Measured against a live server, with the
+fields placed as below:
+
+| Offset | Type | Meaning |
+| --- | --- | --- |
+| `+0x00` | `WORD` BE | status / client id |
+| `+0x02` | `WORD` BE | total length, `0x0a28` |
+| `+0x04` | `WORD` BE | opcode |
+| `+0x06` | `WORD` | payload word |
+| `+0x08` | `DWORD` | device id — the key into the server's device table |
+| `+0x6f0` | `wchar_t[]`, UTF-16, NUL-terminated | device model, matched against `L"AR"`, `L"AC"`, `L"AP"`, `L"AD"`, `L"R230"`, `L"R250"` |
+| `+0x7d4` | `wchar_t[]` | device / VM name |
+| `+0xa16` | `WORD` | — |
+
+The model string is **wide**, and that is what makes a request look "ignored":
+ASCII in a `wchar_t` field leaves the model unmatched, the handler goes off to
+start nothing, and no reply arrives.
+
+The status comes back at reply `+0x0c` as a **32-bit little-endian** value, and
+the measured values are:
+
+| Opcode | Status | Meaning |
+| --- | --- | --- |
+| 5, 6, 7 | `40` (`0x28`) | device id 0 — not a valid id |
+| 5, 6, 7 | `45` (`0x2d`) | device id not in the table |
+| 8 / 9 | `6` / `7` | stop / delete failed |
+| 10, 21 | `14` (`0x0e`) | sync failed |
+| 25 | `30` (`0x1e`) | export failed — with a well-formed frame it answers, so it is a failure, not a silent success |
+
+The 276-byte reply carries **no device index and no interface port**: apart from
+the frame and status it is `0xffffffff` and zeros. Interface ports have to be
+discovered from the process's UDP endpoints (§5c), not read out of a reply.
+
+A failed `StartDevice` still constructs the per-interface sockets, so they
+accumulate: repeated attempts left ports 10100, 10300, 10700, 10900 owned by
+the process with no device running.
+
 The embedded TinyXML is used for device configuration files and XML printing.
 It has nothing to do with this socket.
 
@@ -318,16 +357,17 @@ read as `manual=0` and silently took the wrong branch.
 
 ## 7. Not established
 
-* The layout of the 2600-byte request beyond `[0:2]` length and `[4:6]`
-  opcode. In particular the device name/model fields `StartDevice` needs: with
-  a device name at payload `+0x6f0` the server stops answering, i.e. it went
-  off to start something, so the field is close to right but the rest is not
-  mapped. This is the last step before "start a device, find its interface
-  socket, register as the client" can be run end to end.
-* **What the eNSP client answers the guest.** `ProcCtrlCmd` type 0 registers
+* What the eNSP client answers the guest. `ProcCtrlCmd` type 0 registers
   the caller as the client and `ProcData` forwards the probe, so the reply is
   produced outside this binary; its bytes are still unknown. This is the last
   piece of `agentd-protocol.md` §③c.
+* **How to reach `ProcCtrlCmd` at all.** Sending its 16-byte message to an
+  interface socket got no reply in any of five header layouts (2- and 4-byte
+  type fields, `0` and `0x4d2`, echoing `0x4d2` at `+4`). The interfaces that
+  exist after a *failed* `StartDevice` may simply not be wired up yet, so this
+  has to be retried once a device really starts — which needs the pipe in §9.
+* The device table itself: the server learns device ids from the eNSP client,
+  not from this channel.
 * Who reads the peer dwords at `CIface+0x00`/`+0x04`. `ProcData` does not, so
   either another routine does or they are written for a path not traced yet.
 * Whether `[con_server] MNG_PORT` is ever bound by the client. It is read at
@@ -354,3 +394,28 @@ appear once it exits. (The server uses its own logger at `0x4256c0`, not
 §2 the server can bind its command port and then never read it. Process alive
 plus port listening is *not* enough: check the thread count, and then send a
 request and expect a reply.
+
+## 9. Where devices actually come from: a named pipe
+
+None of the opcodes above can introduce a device — `StartDevice` takes a device
+id and looks it up (`device id not in the table`, status 45). The roster
+arrives over a different channel, and it is a named pipe:
+
+| | |
+| --- | --- |
+| pipe name format | `\\.\pipe\%s`, `0x45fa92` |
+| `CreateFileW` | callsite `0x40a3cc` |
+| `WaitNamedPipeW` | one callsite, `0x40a406` — busy-pipe retry |
+| `PeekNamedPipe` | `0x40a605` |
+
+So `eNSP_VBoxServer.exe` is the pipe **client**. It does **not** import
+`CreateNamedPipeW` — and neither does `eNSP_Client.exe`, which imports no
+named-pipe API at all. The component that creates the pipe is therefore
+**unidentified**, which matters: "create the pipe yourself, hand the server a
+device list, get a device id" is the obvious next step and it cannot be planned
+until that is known.
+
+The message framing is unknown too. What is established is only that the
+server, as the reader, does `PeekNamedPipe` before reading, i.e. the protocol
+is length-prefixed or otherwise self-delimiting rather than fixed-size like the
+UDP channel.
