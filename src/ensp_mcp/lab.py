@@ -14,8 +14,10 @@ For each device the lab owns a VirtualBox VM that is:
 * given a host-only NIC on the 192.168.56.0/24 segment, with the lab
   assigning each device a free address;
 * given a COM2 host pipe in **client** mode, so VirtualBox dials the
-  host-side pipe server we run (see ``agentd`` for why the roles must be
-  inverted: a pipe VirtualBox creates only grants the host read access);
+  host-side pipe server we run (see ``agentd``: preferred, not required -- a
+  VBox-created pipe opens ``O_RDWR`` while its instance is free, but with
+  client mode the host owns the instance and its security descriptor, so a
+  guest that connects first cannot lock it out);
 * given a ``resource.cfg`` whose interface sockets point at the addresses the
   lab actually handed out -- otherwise VRP exits with
   ``VPORT_Hal_PortEnable failed!``.

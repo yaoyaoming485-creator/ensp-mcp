@@ -18,8 +18,8 @@ The device must be configured with a COM2 pipe in *client* mode, i.e. its
 
     <Port slot="1" ... server="false" path="\\\\.\\pipe\\NAME" hostMode="HostPipe"/>
 
-because a pipe that VirtualBox creates itself only grants the host read
-access.
+because in client mode the host owns the pipe instance, so a guest that
+connects first cannot lock it out.
 """
 from __future__ import annotations
 

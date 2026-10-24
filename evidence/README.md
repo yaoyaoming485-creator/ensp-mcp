@@ -26,9 +26,11 @@ the most time:
 * the media port in the handshake is **network byte order** (`ntohs` is applied
   by the guest, so writing it little-endian makes the guest log
   `Media port is: 53255` for a port of 2000);
-* the host pipe that VirtualBox creates only grants the host **read** access,
-  so the roles have to be inverted (`server="false"` + a host-side pipe
-  server) before the handshake can be answered at all.
+* the pipe direction is easy to get wrong: a VirtualBox-created host pipe can
+  be opened `O_RDWR` while its instance is free, so inverting the roles
+  (`server="false"` + a host-side pipe server) is the robust choice rather
+  than a requirement — the host then owns the instance and its security
+  descriptor, so a guest that connects first cannot lock it out.
 
 It also supersedes the negative result below: the serial pipe *is* worth
 reading — it carries the configuration handshake — but it is **not** where the

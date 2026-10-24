@@ -277,7 +277,9 @@ and a manifest. For every device it:
   binaries);
 * puts it on the host-only segment and assigns it a free address;
 * puts its COM2 UART in **client** mode, so VirtualBox dials a pipe server the
-  lab runs — a pipe VirtualBox creates itself only grants the host read access;
+  lab runs — preferred over letting VirtualBox create the pipe, since the
+  host then owns the instance and a guest that connects first cannot lock it
+  out;
 * rewrites `resource.cfg` so VRP's interface sockets point at the addresses
   the lab handed out — otherwise VRP exits with
   `VPORT_Hal_PortEnable failed!`. The rewrite is remembered next to the
