@@ -18,12 +18,17 @@ most time here:
 * configuration is read from `%LOCALAPPDATA%\eNSP\` and **never** from
   `Program Files`, so a copied tree on another drive changes nothing;
 * the command channel is fixed-size **UDP datagrams** (2600-byte request,
-  276-byte reply, big-endian opcode at offset 4) — not XML, despite the
-  embedded TinyXML.
+  framed reply, big-endian opcode at offset 4) — not XML, despite the embedded
+  TinyXML;
+* it only starts serving if the `MEDIAPORT` event it opens is **already
+  signalled**: otherwise it blocks before creating the thread that reads the
+  socket, so the port is bound and every request is silently dropped.
 
-It also documents the startup gate: the server only *opens* three named events
-that the client creates, so it cannot be started on its own without creating
-them first.
+It also documents the startup gate (the server only *opens* the three named
+events, so it cannot be started on its own without creating them first), the
+opcode table, and the 16-byte control message that lets a replacement host
+register itself as the client and receive the guest's "where is my peer"
+probes.
 
 ## `agentd-protocol.md` — the guest agent
 
