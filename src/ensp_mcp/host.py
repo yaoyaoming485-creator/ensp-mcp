@@ -13,13 +13,16 @@ single device:
 The protocol (recovered from the guest's ``agentd`` binary) is documented in
 ``evidence/agentd-protocol.md``.
 
-The device must be configured with a COM2 pipe in *client* mode, i.e. its
+The device should be configured with a COM2 pipe in *client* mode, i.e. its
 ``.vbox`` has::
 
     <Port slot="1" ... server="false" path="\\\\.\\pipe\\NAME" hostMode="HostPipe"/>
 
 because in client mode the host owns the pipe instance, so a guest that
-connects first cannot lock it out.
+connects first cannot lock it out.  It is not the only working arrangement: a
+pipe VirtualBox creates itself also opens read-write from the host while its
+instance is free, so client mode is preferred for robustness rather than
+required.
 """
 from __future__ import annotations
 
