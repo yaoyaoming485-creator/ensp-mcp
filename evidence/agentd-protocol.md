@@ -279,7 +279,7 @@ the decrypted `dev0`) and accepts exactly four bytes whose big-endian value is
 ```
 
 So the host answers with `00 00 00 02`. The value that matters is not the
-handshake's own `1`: each port keeps a counter at `0x08044a0 + 4*port` which
+handshake's own `1`: each port keeps a counter at `0x080844a0 + 4*port` which
 the guest bumps every time it sends a handshake (`0x0804bd9a`), and while that
 counter is above 4 the port is in **control state** — every datagram longer
 than four bytes is dropped. A `2` from the host resets the counter to 0
@@ -302,7 +302,33 @@ Three details make the timing exact:
   round, so data state lasts five rounds; the guest sends every 10 ms, i.e.
   about **50 ms**. The host has to answer **every** probe, not once.
 
-The guest itself answers a `1` with `2`, which is the clearest statement of the
+#### Who sends what, and the two gates
+
+The guest side of the handshake is in the same `dev0`, and it is worth writing
+down because it fixes the *shape* of the answer:
+
+* the sender is a per-port thread (`0x0804bd10`) that wakes every 10 ms
+  (`usleep(0x2710)` at `0x0804bda2`) and puts `htonl(1)` into the send
+  record — a **constant**, not a per-interface number (`0x0804bd77`:
+  `movl $0x1,(%esp); call htonl; mov %eax,0xc(%ebx)`). The only other value
+  the guest ever originates is `htonl(3)` (`0x0804be04`), and that branch
+  needs the `+0x04` flag set, which never happens inside the guest. So the
+  guest originates `1` and `3`, never `2` — **`2` is host-to-guest only**.
+* the receiver gates on two things before it looks at the value at all: the
+  datagram must be exactly four bytes (`0x0804bbce`), and the port's `+0x05`
+  flag must be set (`0x0804bbf7`). That flag is the guest's own "this
+  interface is up" bit, raised by its `VPORT_Hal_PortEnable`; the host
+  cannot raise it by sending anything, so an answer to a port that was never
+  enabled is silently dropped.
+* `+0x04` is the mode bit. It is written in exactly one place in the whole
+  binary — `0x0804beb2`, which clears it while initialising the shared
+  `VPORT_STAT` segment (1600 bytes, 200 entries of 8, base `0x08084480`) —
+  and nothing inside the guest ever sets it. It is read at `0x0804bcd2` to
+  decide whether a `2` counts, and at `0x0804bcf0` to decide whether a `1`
+  is answered with `2` (the normal case) or with `3` (the case the eNSP host
+  creates by setting the bit from its side of the shared segment).
+
+The guest answers a `1` with `2`, which is the clearest statement of the
 convention: `2` is the value that means "seen" and reopens the port.
 
 Answering with the peer's address is silently discarded — which is what this

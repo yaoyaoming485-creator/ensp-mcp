@@ -42,6 +42,25 @@ exactly — 41,599 bytes, ELF 32-bit LSB i386, not stripped, SHA-256
 can be pulled out of any eNSP install (it lives at `dev/upload/agentd` inside
 the device image).
 
+The guest's **VPORT** binary, `dev0`, is in the same position: it is the
+process that actually owns the interface sockets and answers the link
+handshake, and it is **not** redistributed here. It ships inside the device
+image as `dev/upload/dev_base_0`, compressed with a repeating 4096-byte XOR
+key (`agentd`'s `decompress`, `0x0804c2df`); the decrypted file is 237,484
+bytes, ELF 32-bit LSB i386, SHA-256
+`7817a46b2637792064bc33e5078cc87a0a4e2a0525928c4780e75cadb5ef2d36`. The key
+needs no assumption: `dev/upload/dev_base_1` is the same transform applied to
+`dev/upload/dev1`, and XORing the two yields it directly.
+
+```python
+# dev_base_* and dev* are all inside dev/upload/ of the device image
+key = bytes(a ^ b for a, b in zip(open('dev_base_1', 'rb').read(),
+                                  open('dev1', 'rb').read()))[:4096]
+open('dev0', 'wb').write(
+    bytes(c ^ key[i % 4096]
+          for i, c in enumerate(open('dev_base_0', 'rb').read())))
+```
+
 `agentd-protocol.md` documents the four channels the guest uses to talk to
 the host, the byte layouts, the state machine, and the two traps that cost
 the most time:

@@ -171,18 +171,25 @@ class UdpRelay:
             self.received += 1
             # A four-byte datagram is the interface's link handshake, not a
             # question.  The guest's VPORT process sends `htonl(1)` per
-            # interface, once a second, and validates whatever comes back in
+            # interface, every 10 ms (`0x0804bd77`, `usleep(0x2710)` at
+            # `0x0804bda2`), and validates whatever comes back in
             # `0x0804bbb0`: four bytes whose big-endian value is 1, 2 or 3 -
             # anything else, including a peer address, returns -1 and is
             # dropped (read out of the decrypted `dev0`).
             #
             # The answer that actually keeps the interface usable is 2.  The
-            # port holds a counter at `0x08044a0 + 4*port` which the sender
+            # port holds a counter at `0x080844a0 + 4*port` which the sender
             # bumps on every handshake (`0x0804bd9a`); while it is above 4 the
             # port sits in control state and every datagram longer than four
             # bytes is dropped, which is why only handshakes ever get through.
             # A `2` from the host resets that counter to 0 (`0x0804bcd8`), and
             # a counter of 4 or less puts the port back into data state.
+            #
+            # The guest answers a `1` with a `2` of its own (`0x0804bcf0`), so
+            # it will also send us `2`; answering every four-byte datagram
+            # covers both directions.  The answer has to go back from the same
+            # socket, so the source address the server has registered for us
+            # keeps matching.
             if len(data) == 4:
                 try:
                     s.sendto(b"\x00\x00\x00\x02", peer)

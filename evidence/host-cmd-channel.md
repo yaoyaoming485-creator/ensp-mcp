@@ -299,7 +299,21 @@ interface traffic:
   (`0x4103c0`).
 
 So the server never answers the "where is my peer" probe itself — it forwards
-it. `ProcCtrlCmd` takes a 16-byte message and accepts exactly two types:
+it.
+
+The same routine also carries the *other* direction, and that is what makes a
+four-byte answer possible without touching the server. A datagram that takes
+the branch at `0x4102c0` is relayed to the guest with
+`sendto(CIface+0x10, buf, len, 0, CIface+0x30, 16)` at `0x410302`, where
+`CIface+0x30` is the guest's own address, captured from the guest's probe at
+`0x410367`-`0x41037f`. The length is passed through untouched (`push ebp` at
+`0x4102ff`), so a four-byte answer reaches the guest as four bytes - which is
+exactly what the guest's `0x0804bbce` requires. Both branches end with
+`cmp ebp,0x4; je 0x410418` at `0x410406`, which skips
+`CInterface::CaptureData`: the capture path is separate from the relay, and a
+four-byte datagram is never captured.
+
+`ProcCtrlCmd` takes a 16-byte message and accepts exactly two types:
 
 | Field | Meaning |
 | --- | --- |
