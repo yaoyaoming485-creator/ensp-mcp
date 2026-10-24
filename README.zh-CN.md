@@ -1,4 +1,4 @@
-﻿# ensp-mcp
+# ensp-mcp
 
 面向华为 **eNSP**（Enterprise Network Simulation Platform）的 MCP 服务器。
 它给 Agent 提供 eNSP 本身没有暴露的三样东西：**把拓扑当文件写出来**、
@@ -191,8 +191,8 @@ $ enspctl lab create demo --topo lab.topo --root ./demo --with-vms
 lab 'demo' created in ./demo
   R1         model=AR2220     vm=demo-R1   ip=192.168.56.101   pipe=\\.\pipe\enspctl-demo-R1
   R2         model=AR2220     vm=demo-R2   ip=192.168.56.102   pipe=\\.\pipe\enspctl-demo-R2
-  demo-R1: cloning from AR_Base ...
-  demo-R2: cloning from AR_Base ...
+  demo-R1: linked clone from AR_Base/AR_Base_Link ...
+  demo-R2: linked clone from AR_Base/AR_Base_Link ...
 
 $ enspctl lab up --root ./demo
 patching resource.cfg ...
