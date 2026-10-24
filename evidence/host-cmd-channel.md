@@ -226,7 +226,7 @@ at `0x4086a3`. Anything else returns the opcode unchanged.
 | 19 | `0x409c60` | `GetMemoryStatus` (`GlobalMemoryStatusEx` → `MEMORYSTATUSEX`) | 296 |
 | 21 | `0x4093e0` (same as 10) | `SyncCfg` | 276 |
 | 22 | `0x409a00` | `Shutdown` | 276, **then the process exits** |
-| 25 | `0x4096f0` | `ExportCfg` | 276 |
+| 25 | `0x4096f0` | `ExportCfg` | 276 statically — **no reply was observed** in a live test |
 | 1233 | `0x409be0` | `QueryFileTransmitPort` | 10 |
 
 The method names are the ones the handlers print, so they are read off the
