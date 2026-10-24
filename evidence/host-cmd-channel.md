@@ -374,11 +374,32 @@ read as `manual=0` and silently took the wrong branch.
   has to be retried once a device really starts — which needs the pipe in §9.
 * The device table itself: the server learns device ids from the eNSP client,
   not from this channel.
-* Who reads the peer dwords at `CIface+0x00`/`+0x04`. `ProcData` does not, so
-  either another routine does or they are written for a path not traced yet.
 * Whether `[con_server] MNG_PORT` is ever bound by the client. It is read at
   `0x48644e`; the allocator in §5c cannot produce 65514, but that says nothing
   about the client.
+
+**Resolved negative: nothing reads the peer fields that `type 1234` writes.**
+All 19 `sendto` call sites were audited by destination — two go to the guest
+address `CIface+0x30` (`0x410302`, `0x41bf04`), four go to the client address
+`CIface+0x20` (`0x4103c0`, `0x41bfc2`, `0x41c4a9`, `0x41c651`), one is the
+`ProcCtrlCmd` ack (`0x41055e`), and the rest belong to the file-transfer and
+tunnel subsystems. Not one builds a destination from the peer fields, and
+nothing in `0x40f000`-`0x411200` assembles a sockaddr out of them.
+
+So the peer endpoint reaches the guest by **configuration**, not by an answer
+on this channel. `peerip` (`0x465290`) and `peerport` (`0x465298`) are generated
+per device by the routine starting at `0x41efea`, which walks the device chain
+(`[esi+0x28]`) and inserts one pair per device (`0x420f90`), taking the port
+from `[ebp+esi*2+0x200]`. Where those pairs are delivered is not established,
+but that is the mechanism — and `agentd-protocol.md` §③e already records both
+names as the peer's endpoint.
+
+One discrepancy stays open: `ProcCtrlCmd` writes the peer via
+`[esi+4]+idx*4` → `[obj]`/`[obj+4]`, and that is the same object whose sockets
+sit at `+0x10`/`+0x14` and whose sockaddrs sit at `+0x20`/`+0x30`. If its vtable
+is at `+0x00`, those writes would be destroying it. Which reading is right is
+unsettled; it does not change the conclusion, because either way nothing reads
+the values back.
 
 **Retracted: this channel is live.** An earlier revision of this file claimed
 the string-command dispatcher at `0x41dec0` was dead code because nothing
