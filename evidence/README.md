@@ -7,6 +7,24 @@ Measured on Windows 11 (build 22621) with eNSP `V1.3.00.100` and Oracle
 VirtualBox `7.2.18 r175117`, against device VM `R1`, an eNSP AR clone whose disk
 chain resolves to `C:\Program Files\Huawei\eNSP\VBoxServer\AR_Base\AR_Base.vdi`.
 
+## `host-cmd-channel.md` — the host side
+
+The other end of the same problem: `eNSP_VBoxServer.exe`, the component the
+eNSP client drives to create and start devices. It is not on this project's
+path — `ensp-mcp` starts the VMs itself and then speaks `agentd` — but it
+explains what the GUI is doing, and it records the two things that cost the
+most time here:
+
+* configuration is read from `%LOCALAPPDATA%\eNSP\` and **never** from
+  `Program Files`, so a copied tree on another drive changes nothing;
+* the command channel is fixed-size **UDP datagrams** (2600-byte request,
+  276-byte reply, big-endian opcode at offset 4) — not XML, despite the
+  embedded TinyXML.
+
+It also documents the startup gate: the server only *opens* three named events
+that the client creates, so it cannot be started on its own without creating
+them first.
+
 ## `agentd-protocol.md` — the guest agent
 
 The full protocol, recovered by disassembling the guest's `agentd` binary and

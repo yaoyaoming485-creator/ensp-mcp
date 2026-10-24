@@ -572,5 +572,10 @@ All measurements were taken on a real installation.
   [`evidence/capture_boot.py`](evidence/capture_boot.py) — the serial pipe
   captured from the moment the VM is powered on.
 * [`evidence/console-*.png`](evidence/) — the guest's virtual screen.
+* [`evidence/host-cmd-channel.md`](evidence/host-cmd-channel.md) — the host
+  component the eNSP client drives (`eNSP_VBoxServer.exe`): where it reads its
+  configuration, the events it waits for, and the fixed-size UDP datagrams it
+  exchanges. Not used by `ensp-mcp`; it documents what a GUI-free replacement
+  would have to reproduce.
 
 MIT.

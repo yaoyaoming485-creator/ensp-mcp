@@ -259,6 +259,10 @@ something it does not know yet, and it keeps asking. The answer's exact
 layout is the one thing still missing; the address of the peer is the
 obvious candidate, and this implementation sends it.
 
+This is the per-interface traffic only. The same binary's *control* side — the
+socket the eNSP client uses to create and start devices — is a different
+channel and is described in [`host-cmd-channel.md`](host-cmd-channel.md).
+
 ### ③f Where it still breaks
 
 The VRP never ARPs for its peer, so only the 4-byte keepalives travel.
