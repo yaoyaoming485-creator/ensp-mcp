@@ -90,6 +90,7 @@ def cmd_lab_create(args) -> int:
 
 def cmd_lab_patch(args) -> int:
     """Rewrite each device's resource.cfg so VRP can bind its sockets."""
+    from . import board as boardmod
     from . import rescfg
     lab = labmod.Lab.load(args.root)
     print("patching resource.cfg ...")
@@ -102,7 +103,15 @@ def cmd_lab_patch(args) -> int:
             failed.append(d.name)
             continue
         ports = lab.interface_ports(d)
-        if not lab.needs_patch(d, vdi, dest_port=True, port_map=ports):
+        # The board is the part that tells the guest which ports it has.  It
+        # is only written when it is asked for: without it the guest keeps
+        # the board the image shipped with (the AR201's nine ports), which is
+        # what a lab that only needs the interfaces to come up can live with.
+        brd = boardmod.board_for(d.model) if getattr(args, "board", False) else None
+        if getattr(args, "board", False) and brd is None:
+            print(f"  {d.name}: no board known for {d.model}, keeping the image's")
+        if not lab.needs_patch(d, vdi, dest_port=True, port_map=ports,
+                               board=brd):
             print(f"  {d.name}: already patched -> local {d.ip}, "
                   f"dest {lab.guest_host_ip} ({vdi.name})")
             continue
@@ -110,15 +119,19 @@ def cmd_lab_patch(args) -> int:
             n, new_disk = rescfg.rewrite_vdi(vdi, d.ip, lab.guest_host_ip,
                                               vm_name=d.vm,
                                               media_port=d.media_port,
-                                              port_map=ports)
+                                              port_map=ports,
+                                              board=brd)
         except rescfg.ResourceCfgError as exc:
             print(f"  {d.name}: FAILED {exc}")
             failed.append(d.name)
             continue
         total += n
-        lab.mark_patched(d, new_disk, dest_port=True, port_map=ports)
+        lab.mark_patched(d, new_disk, dest_port=True, port_map=ports, board=brd)
+        extra = ""
+        if brd is not None:
+            extra = f", board {d.model} ({brd.port_count} ports, device_type {brd.device_type})"
         print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, "
-              f"dest {lab.guest_host_ip}")
+              f"dest {lab.guest_host_ip}{extra}")
     print(f"patched {total} socket line(s)")
     if failed:
         # A guest whose resource.cfg still points at the old addresses cannot
@@ -493,6 +506,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     lp = l.add_parser("patch", help="rewrite each device's resource.cfg")
     lp.add_argument("--root", required=True)
+    lp.add_argument("--board", action="store_true",
+                    help="also write the model's board (device_type and the "
+                         "port list) into resource.cfg, so the guest presents "
+                         "the model's ports instead of the ones the image "
+                         "shipped with")
     lp.set_defaults(func=cmd_lab_patch)
 
     ld = l.add_parser("down", help="stop the lab's machines")

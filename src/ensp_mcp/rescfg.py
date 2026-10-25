@@ -65,9 +65,9 @@ def rewrite_text(text: str, guest_ip: str, host_ip: str,
 # ------------------------------------------------------------------ loop --
 
 _LOOP_SCRIPT = r"""#!/bin/bash
-# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip> <port-map-json>
+# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip> <port-map-json> <board-json>
 set -e
-RAW="$1"; GUEST="$2"; HOST="$3"; PORTS="$4"
+RAW="$1"; GUEST="$2"; HOST="$3"; PORTS="$4"; BOARD="$5"
 MNT=/mnt/enspctl-edit
 LOOP=$(losetup -j "$RAW" -O NAME --noheadings 2>/dev/null | head -1 | tr -d ' ')
 if [ -z "$LOOP" ]; then
@@ -82,11 +82,12 @@ if [ ! -f "$F" ]; then
   exit 3
 fi
 cp "$F" "$F.bak"
-python3 - "$F" "$GUEST" "$HOST" "$PORTS" <<'PYEOF'
+python3 - "$F" "$GUEST" "$HOST" "$PORTS" "$BOARD" <<'PYEOF'
 import json, re, sys
 
-path, guest, host, ports = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+path, guest, host, ports, board = sys.argv[1:6]
 pm = {int(k): int(v) for k, v in json.loads(ports).items()}
+bd = json.loads(board) if board and board != "null" else None
 text = open(path, encoding="utf-8", errors="replace").read()
 
 line_re = re.compile(r"(interface\[(\d+)\]\s*=\s*socket\[)([^\]]*)(\])")
@@ -103,6 +104,43 @@ def fix(m):
     return m.group(1) + body + m.group(4)
 
 out = line_re.sub(fix, text)
+
+if bd:
+    # The board: the device type and the port list, written the way the eNSP
+    # client writes them (the guest's VRP reads exactly these two things out
+    # of this file - see "VPORT_Resource_Init" in dev2).
+    groups = bd["groups"]
+    lines = []
+    index = 0
+    for name, count, encap, engine, ptype, mod in groups:
+        for member in range(count):
+            local_port = 10000 + index
+            dest_port = pm.get(index, 0)
+            lines.append(
+                "interface[%d] = socket[local:%s:%d dest:%s:%d role:client protocol:udp]"
+                "[port_phy card_id:0 panel_port:0 port_name:%s cpu_port:%d encap_flag:%d"
+                " engine_type:%d port_type:%d mod_id:%d port_id:%d phy_id:1]"
+                % (index, guest, local_port, host, dest_port, name, index,
+                   encap, engine, ptype, mod, member))
+            index += 1
+    # drop the old interface lines and put the new ones where they were
+    first = None
+    keep = []
+    for line in out.splitlines():
+        if re.match(r"\s*interface\[\d+\]\s*=", line):
+            if first is None:
+                first = len(keep)
+            continue
+        keep.append(line)
+    if first is None:
+        first = len(keep)
+    keep[first:first] = lines
+    out = "\n".join(keep) + "\n"
+    out = re.sub(r"(?m)^(\s*device_type\s*=\s*)\d+", r"\g<1>%d" % bd["device_type"], out)
+    if not re.search(r"(?m)^\s*device_type\s*=", out):
+        out = re.sub(r"(?m)^(\s*\{Total Resource\})", r"\g<1>\ndevice_type = %d" % bd["device_type"], out)
+    print("wrote %d interface line(s), device_type = %d" % (len(lines), bd["device_type"]))
+
 open(path, "w", encoding="utf-8", newline="").write(out)
 print("patched %d socket lines" % len(line_re.findall(text)))
 PYEOF
@@ -111,11 +149,28 @@ losetup -d "$LOOP" 2>/dev/null || true
 """
 
 
+def board_json(board: "object | None") -> str:
+    """The board description as the patch script wants it."""
+    if board is None:
+        return "null"
+    groups = [[g.name, g.count, g.encap_flag, g.engine_type, g.port_type, g.mod_id]
+              for g in board.groups]
+    return json.dumps({"device_type": board.device_type, "groups": groups})
+
+
+
 def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
                           media_port: int | None = None,
                           port_map: dict[int, int] | None = None,
+                          board: "object | None" = None,
                           wsl: bool = True) -> int:
-    """Patch the file inside a raw image using WSL's loop device."""
+    """Patch the file inside a raw image using WSL's loop device.
+
+    ``board`` is the guest's board description (see :mod:`ensp_mcp.board`).
+    When it is given, the file's interface list and ``device_type`` are
+    rewritten to match it - that is what makes the guest present the
+    model's ports instead of the ones the image shipped with.
+    """
     if not wsl:
         raise ResourceCfgError("only the WSL backend is implemented")
 
@@ -137,7 +192,8 @@ def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
     image_wsl = to_wsl(image_win)
 
     args = [script_wsl, image_wsl, guest_ip, host_ip,
-            json.dumps({str(k): int(v) for k, v in (port_map or {}).items()})]
+            json.dumps({str(k): int(v) for k, v in (port_map or {}).items()}),
+            board_json(board)]
     proc = subprocess.run(
         ["wsl", "-u", "root", "-e", "bash"] + args,
         capture_output=True, text=True, errors="replace", timeout=900,
@@ -182,7 +238,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 vm_name: str = "", storagectl: str = "IDE",
                 port: int = 0, device: int = 0,
                 media_port: int | None = None,
-                port_map: dict[int, int] | None = None) -> tuple[int, Path]:
+                port_map: dict[int, int] | None = None,
+                board: "object | None" = None) -> tuple[int, Path]:
     """Patch ``resource.cfg`` inside a VDI image.
 
     VirtualBox cannot mount a VDI on a loop device, so the disk is converted
@@ -221,7 +278,7 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
     try:
         run(["clonemedium", "disk", str(vdi), str(raw), "--format", "RAW"])
         n = rewrite_in_raw_image(raw, guest_ip, host_ip, media_port=media_port,
-                                 port_map=port_map)
+                                 port_map=port_map, board=board)
         run(["clonemedium", "disk", str(raw), str(patched), "--format", "VDI"])
         if vm_name:
             # Move the patched disk next to the original (the temporary

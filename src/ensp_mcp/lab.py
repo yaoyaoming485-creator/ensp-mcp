@@ -78,6 +78,17 @@ AR_IMAGE_CANDIDATES = [
 ]
 
 
+def _board_state(board: "object | None") -> dict | None:
+    """The board description as it is remembered in the patch marker."""
+    if board is None:
+        return None
+    return {
+        "device_type": getattr(board, "device_type", None),
+        "groups": [[g.name, g.count, g.encap_flag, g.engine_type,
+                    g.port_type, g.mod_id] for g in getattr(board, "groups", ())],
+    }
+
+
 def _difference_disk(base: Path) -> Path:
     """Find the difference disk that sits on top of the base image.
 
@@ -554,7 +565,8 @@ class Lab:
 
     def needs_patch(self, dev: LabDevice, disk: Path | None,
                     dest_port: bool = True,
-                    port_map: dict[int, int] | None = None) -> bool:
+                    port_map: dict[int, int] | None = None,
+                    board: "object | None" = None) -> bool:
         """Does this device's ``resource.cfg`` still point at the old addresses?
 
         Rewriting the image is expensive (a VDI -> raw -> VDI round trip), so
@@ -578,6 +590,8 @@ class Lab:
         if port_map is not None:
             if state.get("ports") != {str(k): v for k, v in port_map.items()}:
                 return True
+        if state.get("board") != _board_state(board):
+            return True
         return not (state.get("ip") == dev.ip
                     and state.get("host") == self.guest_host_ip
                     and state.get("disk") == disk.name
@@ -585,7 +599,8 @@ class Lab:
 
     def mark_patched(self, dev: LabDevice, disk: Path,
                      dest_port: bool = True,
-                     port_map: dict[int, int] | None = None) -> None:
+                     port_map: dict[int, int] | None = None,
+                     board: "object | None" = None) -> None:
         marker = self.patch_marker(dev)
         marker.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -597,6 +612,7 @@ class Lab:
             "disk": disk.name, "size": size,
             "dest_port": bool(dest_port),
             "ports": {str(k): v for k, v in (port_map or {}).items()},
+            "board": _board_state(board),
         }, indent=2), encoding="utf-8")
 
     def destroy_vms(self) -> None:
