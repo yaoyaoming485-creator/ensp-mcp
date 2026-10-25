@@ -1,4 +1,4 @@
-"""Background supervisor for a lab.
+﻿"""Background supervisor for a lab.
 
 The guests power themselves off as soon as the agentd control socket closes,
 so the drivers have to outlive the command that started the lab.  This module
@@ -237,6 +237,8 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
     # itself off, so such a device is simply given another try: the machine
     # is power-cycled and the drivers redo the handshake.
     attempts = {d.log_prefix: 0 for d in devs}
+    #: consecutive failed probes per device, see the sweep below
+    misses: dict[str, int] = {}
     deadline = time.time() + 300
     while time.time() < deadline:
         if all(d.ready.is_set() for d in devs):
@@ -303,7 +305,20 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
         for dev, drv in zip(lab.devices, devs):
             if not drv.ready.is_set():
                 continue
-            if agentd.probe_endpoint(lab.agent_endpoint(dev), timeout=0.3):
+            # Two devices with nine interfaces each keep the guest busy enough
+            # that a single TCP connect to its control port can miss a 300 ms
+            # deadline while it is perfectly alive.  Power-cycling it for that
+            # is both wrong and expensive (a restart costs the whole boot), so
+            # this needs three sweeps in a row - about thirty seconds - before
+            # it believes the device is gone.
+            if agentd.probe_endpoint(lab.agent_endpoint(dev), timeout=2.0):
+                misses[drv.log_prefix] = 0
+                continue
+            misses[drv.log_prefix] = misses.get(drv.log_prefix, 0) + 1
+            if misses[drv.log_prefix] < 3:
+                print(f"  {dev.name}: probe missed "
+                      f"({misses[drv.log_prefix]}/3) - not restarting yet",
+                      flush=True)
                 continue
             attempts[drv.log_prefix] += 1
             if attempts[drv.log_prefix] > 5:
