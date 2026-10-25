@@ -783,3 +783,22 @@ VBoxManage startvm MYR2 --type headless
 python scripts/vrp_cli.py --guest 192.168.56.101 display version
 ```
 
+
+### ③f-2 The device package (`vrpcfg.zip`) does **not** choose the board
+
+Measured, because it was proposed as the answer. The guest image's
+`/dev/download` holds `statemach.efs` (2263 bytes, md5 `9763e431…`) whose
+content is `flash:/vrpcfg.zip` — a pointer with no package behind it — while
+every one of the 75 device directories under `eNSP\examples` carries both
+`statemach.efs` and a small `vrpcfg.zip` (788-813 bytes). That difference is
+real, and it is tempting to read it as the reason a guest comes up on the
+image's own AR201 board.
+
+It is not. Copying an official `vrpcfg.zip` into `/dev/download/` and booting
+leaves the guest exactly as it was: `display device` still answers
+**"AR201's Device Status"** and `display interface brief` still lists the nine
+`Ethernet0/0/…` ports. The board is chosen by `device_type` in
+`resource.cfg` (see §11 and `host-cmd-channel.md`), not by the package.
+
+What the package is for is still unknown; a guest without it boots and runs,
+so it is not required for the interfaces to come up either.
