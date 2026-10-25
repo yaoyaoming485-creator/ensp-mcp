@@ -172,8 +172,25 @@ Consequences:
   which is why a lab can look perfectly healthy while the control port is
   dead.
 
-`proc_msg` treats the three possible `recv` results very differently:
+### ②c The queue theory, measured
 
+The claim above was inferred from the binary; it has since been A/B tested on
+the real thing, twice each way, with a two-device lab and one link:
+
+| liveness | probe close | result |
+| --- | --- | --- |
+| control connection | — | survived **330 s**, zero probe failures, 110–115 real frames per active interface |
+| probe every 10 s | RST | survived 300 s (the RST alone keeps the queue empty) |
+| probe every 10 s | graceful | **failures returned at ~210 s** — `control connection lost (1/3)`, then R2 oscillating between 1/3 and 2/3 |
+
+One correction to the inference: `devices_up()` only probes during the
+*sixteen-second* startup wait, not for the device's whole life — steady state
+is one probe per ten seconds, not one per second. The queue is therefore filled
+mostly at boot (about one probe per second for the ninety-odd seconds a guest
+takes to come up), which is why the failures land at roughly 190–210 s rather
+than at 1280 s.
+
+`proc_msg` treats the three possible `recv` results very differently:
 | `recv` returns | guest does | effect |
 | --- | --- | --- |
 | `> 0` (44 bytes) | `ntohl` + `memcmp(buf+4, dev_id, 37)` (`0x0804aec8`) | mismatch ⇒ logs "Device ID not equal." and loops back to `recv` — harmless; match ⇒ `ready=1` + `cond_signal` |
