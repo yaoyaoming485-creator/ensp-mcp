@@ -133,6 +133,9 @@ class UdpRelay:
         self.forwarded = 0
         self.received = 0
         self.answered = 0
+        #: four-byte link handshakes, and datagrams longer than that
+        self.handshakes = 0
+        self.large = 0
 
     def log(self, msg: str) -> None:
         if self.log_prefix:
@@ -160,15 +163,26 @@ class UdpRelay:
     def _run(self, iface: int) -> None:
         s = self.socks[iface]
         _port, peer_ip, peer_port = self.links[iface]
+        last_report = time.time()
         while not self._stop.is_set():
             s.settimeout(1.0)
             try:
                 data, peer = s.recvfrom(65535)
             except socket.timeout:
+                # Periodic length census.  It is the only host-side signal for
+                # whether the interface ever left control state: VPORT drops
+                # everything longer than four bytes while it is still there
+                # (`0x0804e508`), and writes no log of its own to read instead.
+                if time.time() - last_report >= 30.0:
+                    self.log(f"udp relay: iface {iface}: {self.received} datagram(s), "
+                             f"{self.handshakes} four-byte, {self.large} longer")
+                    last_report = time.time()
                 continue
             except OSError:
                 break
             self.received += 1
+            if len(data) != 4:
+                self.large += 1
             # A four-byte datagram is the interface's link handshake, not a
             # question.  The guest's VPORT process sends `htonl(1)` per
             # interface, every 10 ms (`0x0804bd77`, `usleep(0x2710)` at
@@ -191,6 +205,7 @@ class UdpRelay:
             # socket, so the source address the server has registered for us
             # keeps matching.
             if len(data) == 4:
+                self.handshakes += 1
                 # Answer, but do **not** pass the handshake on.  It is a
                 # per-interface exchange between the guest and the host, not
                 # traffic, and forwarding it corrupts state: VPORT records the
