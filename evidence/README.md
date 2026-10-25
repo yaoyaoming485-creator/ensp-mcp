@@ -35,6 +35,13 @@ probes.
 The full protocol, recovered by disassembling the guest's `agentd` binary and
 confirmed against a live guest.
 
+It documents, among other things, that **the guest's control port is accepted
+exactly once** (`accept()` is called a single time, at `0x0804b309`, with a
+128-deep listen backlog at `0x0804b157`), that a lost control connection ends
+the channel for good without killing the guest, and that the host therefore
+**must not probe port 56789** — it has to read liveness from the control
+connection it already holds.
+
 `agentd` is a vendor file from the eNSP device image, so it is **not
 redistributed in this repository** (see `.gitignore`). The notes identify it
 exactly — 41,599 bytes, ELF 32-bit LSB i386, not stripped, SHA-256

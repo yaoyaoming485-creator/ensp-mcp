@@ -22,7 +22,6 @@ import sys
 import time
 from pathlib import Path
 
-from . import agentd
 from . import lab as labmod
 from .host import HostDevice, HostOptions, MediaHub
 
@@ -211,9 +210,19 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
     state = {"seen_up": False, "gone_since": None}
 
     def devices_up() -> int:
+        """How many devices still hold their control connection.
+
+        The control connection is the liveness signal, not a fresh TCP
+        connect: the guest's agentd accepts exactly one connection
+        (``0x0804b309``) and then blocks on it for the rest of its life, so
+        the connection being open means agentd is alive.  Probing the port
+        instead would open a second connection the guest never accepts -
+        and every one of those fills the 128-deep accept queue until the
+        guest stops completing handshakes and the probes fail for real.
+        """
         up = 0
-        for d in lab.devices:
-            if agentd.probe_endpoint(lab.agent_endpoint(d), timeout=0.3):
+        for drv in devs:
+            if drv.control_up.is_set():
                 up += 1
         return up
 
@@ -305,18 +314,22 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
         for dev, drv in zip(lab.devices, devs):
             if not drv.ready.is_set():
                 continue
-            # Two devices with nine interfaces each keep the guest busy enough
-            # that a single TCP connect to its control port can miss a 300 ms
-            # deadline while it is perfectly alive.  Power-cycling it for that
-            # is both wrong and expensive (a restart costs the whole boot), so
-            # this needs three sweeps in a row - about thirty seconds - before
-            # it believes the device is gone.
-            if agentd.probe_endpoint(lab.agent_endpoint(dev), timeout=2.0):
+            # The control connection is the liveness signal.  The guest's
+            # agentd accepts exactly one connection and then blocks on it
+            # for the rest of its life, so the connection being open means
+            # agentd is alive - and a lost control channel means the device
+            # has to be restarted, because the guest will never accept a
+            # second connection.
+            #
+            # Three sweeps in a row - about thirty seconds - have to agree
+            # before the device is believed to be gone.  A restart costs the
+            # whole boot, so one bad moment must not trigger it.
+            if drv.control_up.is_set():
                 misses[drv.log_prefix] = 0
                 continue
             misses[drv.log_prefix] = misses.get(drv.log_prefix, 0) + 1
             if misses[drv.log_prefix] < 3:
-                print(f"  {dev.name}: probe missed "
+                print(f"  {dev.name}: control connection lost "
                       f"({misses[drv.log_prefix]}/3) - not restarting yet",
                       flush=True)
                 continue
@@ -327,8 +340,9 @@ def run_foreground(root: Path, verbose: bool = True) -> int:
                       flush=True)
                 drv.ready.clear()
                 continue
-            print(f"  {dev.name}: the device disappeared - restarting it "
-                  f"(attempt {attempts[drv.log_prefix]}/5)", flush=True)
+            print(f"  {dev.name}: the control connection is gone - "
+                  f"restarting the device (attempt "
+                  f"{attempts[drv.log_prefix]}/5)", flush=True)
             drv.reset()
             try:
                 lab.restart_vm(dev)

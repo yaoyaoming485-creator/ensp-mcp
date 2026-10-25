@@ -293,6 +293,17 @@ class HostDevice:
     _serial_ready: threading.Event = field(default_factory=threading.Event)
     #: set once the guest has connected to the media server
     _media_ready: threading.Event = field(default_factory=threading.Event)
+    #: set while the control connection to the guest is open.
+    #:
+    #: This is the only honest liveness signal for a guest.  The guest's
+    #: agentd calls ``accept()`` exactly once (``0x0804b309``) and then blocks
+    #: in ``recv(44)`` on that one socket (``0x0804adf2``) for the rest of
+    #: its life, so "the control connection is still open" means "agentd is
+    #: still there".  A fresh TCP connect to the control port proves nothing:
+    #: the guest's kernel completes the handshake long after agentd stopped
+    #: caring, and every such connection fills the 128-deep accept queue
+    #: that agentd will never drain.
+    control_up: threading.Event = field(default_factory=threading.Event)
     events: list[str] = field(default_factory=list)
     ready: threading.Event = field(default_factory=threading.Event)
     failed: str = ""
@@ -562,6 +573,13 @@ class HostDevice:
                         self._agent_target(), timeout=30.0)
                     self.log(f"control: connected {self._agent_target()[0]}:"
                              f"{self._agent_target()[1]}")
+                    # The guest's agentd accepts exactly one control connection
+                    # and blocks on it for the rest of its life, so an open
+                    # control socket *is* the liveness signal.  Opening a
+                    # second connection to the same port to check on it would
+                    # fill the guest's accept queue with connections that
+                    # agentd never accepts.
+                    self.control_up.set()
                     break
                 except OSError as exc:
                     if not complained:
@@ -615,6 +633,11 @@ class HostDevice:
                     sock.close()
                 except OSError:
                     pass
+                # The guest can never be reached on the control port again:
+                # agentd accepted one connection and will not accept a
+                # second one, so a lost control channel means the device has
+                # to be restarted.
+                self.control_up.clear()
                 # the guest is gone - it may come back after a restart
                 self._serial_ready.clear()
                 self._media_ready.clear()
@@ -649,6 +672,7 @@ class HostDevice:
         self.failed = ""
         self.events.clear()
         self.last_try = 0.0
+        self.control_up.clear()
         self._serial_ready.clear()
         self._media_ready.clear()
 

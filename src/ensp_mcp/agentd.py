@@ -531,6 +531,36 @@ class VrpConsole:
 
 # --------------------------------------------------------------- discovery --
 
+def close_without_trace(sock: socket.socket) -> None:
+    """Close a probe socket with a RST, so the guest reaps it at once.
+
+    The guest's agentd calls ``accept()`` exactly once in its whole life -
+    ``0x0804b309`` in ``startup`` is the only accept call site in the binary.
+    Every other connection to the control port therefore stays in the
+    kernel's accept queue, and the queue is only 128 deep
+    (``listen(fd, 128)`` at ``0x0804b157``).
+
+    A socket that is closed *gracefully* is not removed from that queue: the
+    peer sent a FIN, so the kernel parks the connection in CLOSE_WAIT and
+    waits for an application that will never accept it.  One probe per
+    second therefore fills the queue after a bit more than two minutes, the
+    guest stops completing handshakes, and the probes start failing - the
+    probe would kill the very device it is checking.
+
+    Closing with a RST instead makes the guest's kernel destroy the socket
+    immediately, so a probe leaves no trace at all.
+    """
+    try:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                        struct.pack("ii", 1, 0))
+    except OSError:
+        pass
+    try:
+        sock.close()
+    except OSError:
+        pass
+
+
 def probe_guest_ports(guest_ip: str, ports: tuple[int, ...] = (AGENTD_CONTROL_PORT,
                                                                VRP_CONSOLE_PORT),
                       timeout: float = 0.4) -> dict[int, bool]:
@@ -544,12 +574,17 @@ def probe_guest_ports(guest_ip: str, ports: tuple[int, ...] = (AGENTD_CONTROL_PO
         except OSError:
             out[port] = False
         finally:
-            s.close()
+            close_without_trace(s)
     return out
 
 
 def probe_endpoint(endpoint: str, timeout: float = 0.4) -> bool:
-    """Does the service behind ``endpoint`` (``"host"`` or ``"host:port"``) answer?"""
+    """Does the service behind ``endpoint`` (``"host"`` or ``"host:port"``) answer?
+
+    This opens a *second* connection to a port that the guest accepts only
+    once, so the socket is closed with a RST (see :func:`close_without_trace`)
+    and the guest's accept queue does not fill up with probes.
+    """
     host, port = split_endpoint(endpoint, VRP_CONSOLE_PORT)
     s = socket.socket()
     s.settimeout(timeout)
@@ -558,7 +593,7 @@ def probe_endpoint(endpoint: str, timeout: float = 0.4) -> bool:
     except OSError:
         return False
     finally:
-        s.close()
+        close_without_trace(s)
 
 
 def guest_ip_from_host_only(prefix: str = "192.168.56.",
@@ -583,7 +618,7 @@ def guest_ip_from_host_only(prefix: str = "192.168.56.",
             except OSError:
                 pass
             finally:
-                s.close()
+                close_without_trace(s)
     return found
 
 
@@ -611,7 +646,7 @@ def nat_endpoints(count: int = NAT_DEVICE_COUNT,
         except OSError:
             pass
         finally:
-            s.close()
+            close_without_trace(s)
     return out
 
 

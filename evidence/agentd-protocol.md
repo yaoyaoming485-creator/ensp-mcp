@@ -143,6 +143,48 @@ guest with a dead socket: its `accept()` fails, it aborts with
 `Send boot message to control socket failed` and powers itself off. Keep the
 attempt alive (a long connect timeout) and start it as early as possible.
 
+### ②b The control port is accepted **exactly once** — never probe it
+
+`startup()` does `listen(56789, 128)` and then calls `accept()` **once**
+(`0x0804b309`, the only accept call site in the binary). The accepted socket
+(`[ebp-0x438]`) is handed to two threads — the state machine `control`
+(`0x0804ad9b`) and `proc_msg` (`0x0804adf2`) — and `proc_msg` blocks in
+`recv(fd, 44, MSG_WAITALL)` on it for the rest of the guest's life.
+
+Consequences:
+
+* **A second TCP connection to 56789 is never accepted.** It sits in the
+  kernel's accept queue, and nothing ever drains that queue.
+* **A gracefully closed connection stays in the queue.** The peer sent a FIN,
+  so the kernel parks the socket in `CLOSE_WAIT`, waiting for an application
+  that will never accept it. One probe per second therefore fills the
+  128-deep queue after a bit more than two minutes; after that the guest
+  stops completing handshakes and the probes start failing — the probe kills
+  the very device it is checking. Close a probe with a RST instead
+  (`SO_LINGER {1, 0}`) and the guest's kernel reaps it at once.
+* **Liveness must be read from the control connection the host already
+  holds**, not from a fresh connect: the connection being open *is* the
+  proof that agentd is alive. This is what the real eNSP host does — it
+  never dials 56789 twice.
+* **Losing the control connection is fatal for the device**: the guest will
+  never accept another one, so the only way forward is a restart. The guest
+  keeps running (dev0/dev1/dev2 are separate processes and keep forwarding),
+  which is why a lab can look perfectly healthy while the control port is
+  dead.
+
+`proc_msg` treats the three possible `recv` results very differently:
+
+| `recv` returns | guest does | effect |
+| --- | --- | --- |
+| `> 0` (44 bytes) | `ntohl` + `memcmp(buf+4, dev_id, 37)` (`0x0804aec8`) | mismatch ⇒ logs "Device ID not equal." and loops back to `recv` — harmless; match ⇒ `ready=1` + `cond_signal` |
+| `< 0` (real error) | logs "Receive configuration message from control socket failed: %s." | harmless |
+| `== 0` (peer closed) | logs "Prepare to exit." (`0x0804af66`), `shutdown(SHUT_RDWR)`, `close(fd)` (`0x0804afd0`), **returns** | **the control channel is dead for good** |
+
+Note that "Prepare to exit." is only a log string: the EOF branch closes the
+socket and returns from the thread, it does **not** call `exit()`. The guest
+process survives, which is exactly why the device keeps forwarding traffic
+while 56789 no longer answers.
+
 ### ③ Media — the guest dials *back* to the host
 
 `send_ssid()` (`0x0804d730`):
