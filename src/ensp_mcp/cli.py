@@ -117,8 +117,12 @@ def cmd_lab_patch(args) -> int:
                 brd = boardmod.board_for(d.model)
         if getattr(args, "board", False) and brd is None:
             print(f"  {d.name}: no board known for {d.model}, keeping the image's")
+        # The device type is the one number that really decides the board:
+        # the guest's VRP rewrites the interface list itself, from the board
+        # its device type selects (the board descriptions live in the guest).
+        devtype = getattr(args, "device_type", None)
         if not lab.needs_patch(d, vdi, dest_port=True, port_map=ports,
-                               board=brd):
+                               board=brd, device_type=devtype):
             print(f"  {d.name}: already patched -> local {d.ip}, "
                   f"dest {lab.guest_host_ip} ({vdi.name})")
             continue
@@ -127,13 +131,15 @@ def cmd_lab_patch(args) -> int:
                                               vm_name=d.vm,
                                               media_port=d.media_port,
                                               port_map=ports,
-                                              board=brd)
+                                              board=brd,
+                                              device_type=devtype)
         except rescfg.ResourceCfgError as exc:
             print(f"  {d.name}: FAILED {exc}")
             failed.append(d.name)
             continue
         total += n
-        lab.mark_patched(d, new_disk, dest_port=True, port_map=ports, board=brd)
+        lab.mark_patched(d, new_disk, dest_port=True, port_map=ports, board=brd,
+                         device_type=devtype)
         extra = ""
         if brd is not None:
             extra = f", board {d.model} ({brd.port_count} ports, device_type {brd.device_type})"
@@ -518,6 +524,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "port list) into resource.cfg, so the guest presents "
                          "the model's ports instead of the ones the image "
                          "shipped with")
+    lp.add_argument("--device-type", type=int, default=None,
+                    help="write this device_type into resource.cfg: it is the "
+                         "number that decides which board the guest comes up "
+                         "with, because the guest's VRP rewrites the port list "
+                         "itself")
     lp.set_defaults(func=cmd_lab_patch)
 
     ld = l.add_parser("down", help="stop the lab's machines")

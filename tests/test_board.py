@@ -206,7 +206,7 @@ with tempfile.TemporaryDirectory() as tmp:
     ports = {str(i): 30000 + i for i in range(10)}
     proc = subprocess.run(
         [sys.executable, "-c", body, str(cfg), "192.168.56.101", "192.168.56.1",
-         json.dumps(ports), rescfg.board_json(ar1220)],
+         json.dumps(ports), rescfg.board_json(ar1220), ""],
         capture_output=True, text=True, timeout=60)
     check("the patch script runs", proc.returncode == 0,
           (proc.stderr or proc.stdout).strip()[:160])
@@ -228,6 +228,35 @@ check("the guest's own parser would accept every line",
           r"engine_type:\d+ port_type:\d+ mod_id:\d+ port_id:\d+ phy_id:\d+\]",
           ln) for ln in text.splitlines() if ln.startswith("interface[")),
       "one line does not match the guest's sscanf format")
+
+print()
+print("=" * 72)
+print("6. the device type on its own")
+print("=" * 72)
+
+# The guest's VRP rewrites the interface list itself, from the board its
+# device type selects, so the number is the lever that matters.  Writing it
+# alone must not disturb anything else in the file.
+with tempfile.TemporaryDirectory() as tmp:
+    cfg = Path(tmp) / "resource.cfg"
+    cfg.write_text(STOCK, encoding="utf-8", newline="")
+    ports = {str(i): 30000 + i for i in range(9)}
+    proc = subprocess.run(
+        [sys.executable, "-c", body, str(cfg), "192.168.56.101", "192.168.56.1",
+         json.dumps(ports), "null", "7"],
+        capture_output=True, text=True, timeout=60)
+    check("the patch runs with just a device type", proc.returncode == 0,
+          (proc.stderr or proc.stdout).strip()[:160])
+    text = cfg.read_text(encoding="utf-8")
+
+check("the device type was written", "device_type = 7" in text)
+check("the interface lines are untouched",
+      len(re.findall(r"(?m)^interface\[\d+\] = ", text)) == 2,
+      "lines=%d" % len(re.findall(r"^interface\[\d+\] = ", text, re.M)))
+check("the addresses were still moved",
+      "local:192.168.56.101:10000 " in text
+      and "dest:192.168.56.1:30000 " in text)
+check("the other sections survived", "{CAP Resource}" in text and "{Begin}" in text)
 
 print()
 print("=" * 72)

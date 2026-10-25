@@ -566,7 +566,8 @@ class Lab:
     def needs_patch(self, dev: LabDevice, disk: Path | None,
                     dest_port: bool = True,
                     port_map: dict[int, int] | None = None,
-                    board: "object | None" = None) -> bool:
+                    board: "object | None" = None,
+                    device_type: int | None = None) -> bool:
         """Does this device's ``resource.cfg`` still point at the old addresses?
 
         Rewriting the image is expensive (a VDI -> raw -> VDI round trip), so
@@ -592,6 +593,8 @@ class Lab:
                 return True
         if state.get("board") != _board_state(board):
             return True
+        if device_type is not None and state.get("device_type") != int(device_type):
+            return True
         return not (state.get("ip") == dev.ip
                     and state.get("host") == self.guest_host_ip
                     and state.get("disk") == disk.name
@@ -615,7 +618,8 @@ class Lab:
 
     def mark_patched(self, dev: LabDevice, disk: Path,                     dest_port: bool = True,
                      port_map: dict[int, int] | None = None,
-                     board: "object | None" = None) -> None:
+                     board: "object | None" = None,
+                     device_type: int | None = None) -> None:
         marker = self.patch_marker(dev)
         marker.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -628,6 +632,7 @@ class Lab:
             "dest_port": bool(dest_port),
             "ports": {str(k): v for k, v in (port_map or {}).items()},
             "board": _board_state(board),
+            "device_type": device_type,
         }, indent=2), encoding="utf-8")
 
     def destroy_vms(self) -> None:

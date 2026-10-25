@@ -65,9 +65,9 @@ def rewrite_text(text: str, guest_ip: str, host_ip: str,
 # ------------------------------------------------------------------ loop --
 
 _LOOP_SCRIPT = r"""#!/bin/bash
-# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip> <port-map-json> <board-json>
+# usage: patch_resource.sh <raw-image> <guest-ip> <host-ip> <port-map-json> <board-json> <device-type>
 set -e
-RAW="$1"; GUEST="$2"; HOST="$3"; PORTS="$4"; BOARD="$5"
+RAW="$1"; GUEST="$2"; HOST="$3"; PORTS="$4"; BOARD="$5"; DEVTYPE="$6"
 MNT=/mnt/enspctl-edit
 LOOP=$(losetup -j "$RAW" -O NAME --noheadings 2>/dev/null | head -1 | tr -d ' ')
 if [ -z "$LOOP" ]; then
@@ -82,10 +82,10 @@ if [ ! -f "$F" ]; then
   exit 3
 fi
 cp "$F" "$F.bak"
-python3 - "$F" "$GUEST" "$HOST" "$PORTS" "$BOARD" <<'PYEOF'
+python3 - "$F" "$GUEST" "$HOST" "$PORTS" "$BOARD" "$DEVTYPE" <<'PYEOF'
 import json, re, sys
 
-path, guest, host, ports, board = sys.argv[1:6]
+path, guest, host, ports, board, devtype = sys.argv[1:7]
 pm = {int(k): int(v) for k, v in json.loads(ports).items()}
 bd = json.loads(board) if board and board != "null" else None
 text = open(path, encoding="utf-8", errors="replace").read()
@@ -104,6 +104,16 @@ def fix(m):
     return m.group(1) + body + m.group(4)
 
 out = line_re.sub(fix, text)
+
+if devtype:
+    # The device type is the one number that decides which board the guest
+    # comes up with: its VRP rewrites the interface list itself, from the
+    # board the type selects (the board descriptions live in the guest).
+    out = re.sub(r"(?m)^(\s*device_type\s*=\s*)\d+", r"\g<1>%s" % devtype, out)
+    if not re.search(r"(?m)^\s*device_type\s*=", out):
+        out = re.sub(r"(?m)^(\s*\{Total Resource\})",
+                     r"\g<1>\ndevice_type = %s" % devtype, out)
+    print("device_type = %s" % devtype)
 
 if bd:
     # The board: the device type and the port list, written the way the eNSP
@@ -163,6 +173,7 @@ def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
                           media_port: int | None = None,
                           port_map: dict[int, int] | None = None,
                           board: "object | None" = None,
+                          device_type: int | None = None,
                           wsl: bool = True) -> int:
     """Patch the file inside a raw image using WSL's loop device.
 
@@ -170,6 +181,12 @@ def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
     When it is given, the file's interface list and ``device_type`` are
     rewritten to match it - that is what makes the guest present the
     model's ports instead of the ones the image shipped with.
+
+    ``device_type`` alone rewrites just that one line.  It is the lever
+    that actually matters: the guest's VRP rewrites the interface list
+    itself, from the board its ``device_type`` selects (the board
+    descriptions live in the guest, in dev2), so the number is what
+    decides which board the device comes up with.
     """
     if not wsl:
         raise ResourceCfgError("only the WSL backend is implemented")
@@ -193,7 +210,8 @@ def rewrite_in_raw_image(image: Path, guest_ip: str, host_ip: str,
 
     args = [script_wsl, image_wsl, guest_ip, host_ip,
             json.dumps({str(k): int(v) for k, v in (port_map or {}).items()}),
-            board_json(board)]
+            board_json(board),
+            "" if device_type is None else str(int(device_type))]
     proc = subprocess.run(
         ["wsl", "-u", "root", "-e", "bash"] + args,
         capture_output=True, text=True, errors="replace", timeout=900,
@@ -239,7 +257,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
                 port: int = 0, device: int = 0,
                 media_port: int | None = None,
                 port_map: dict[int, int] | None = None,
-                board: "object | None" = None) -> tuple[int, Path]:
+                board: "object | None" = None,
+                device_type: int | None = None) -> tuple[int, Path]:
     """Patch ``resource.cfg`` inside a VDI image.
 
     VirtualBox cannot mount a VDI on a loop device, so the disk is converted
@@ -278,7 +297,8 @@ def rewrite_vdi(vdi: Path, guest_ip: str, host_ip: str,
     try:
         run(["clonemedium", "disk", str(vdi), str(raw), "--format", "RAW"])
         n = rewrite_in_raw_image(raw, guest_ip, host_ip, media_port=media_port,
-                                 port_map=port_map, board=board)
+                                 port_map=port_map, board=board,
+                                 device_type=device_type)
         run(["clonemedium", "disk", str(raw), str(patched), "--format", "VDI"])
         if vm_name:
             # Move the patched disk next to the original (the temporary
