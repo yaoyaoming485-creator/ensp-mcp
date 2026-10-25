@@ -106,7 +106,39 @@ check("the line layout is the one the client writes",
 
 print()
 print("=" * 72)
-print("3. the file the guest reads")
+print("3. the names the VRP will give the ports")
+print("=" * 72)
+
+# the official eNSP example configurations (examples/2-1Single-Area OSPF,
+# vrpcfg.zip -> vrpcfg.cfg) of a plain AR1220:
+OFFICIAL = [f"Ethernet0/0/{i}" for i in range(8)] + \
+           ["GigabitEthernet0/0/0", "GigabitEthernet0/0/1"]
+
+names = []
+for group in ar1220.groups:
+    for member in range(group.count):
+        names.append(board.vrp_name(group, member))
+check("the ports get the official AR1220 names",
+      sorted(names) == sorted(OFFICIAL),
+      ", ".join(names))
+check("the panel order is the two GE ports and then the eight FE ports",
+      names[:2] == ["GigabitEthernet0/0/0", "GigabitEthernet0/0/1"]
+      and names[2] == "Ethernet0/0/0" and names[9] == "Ethernet0/0/7",
+      ", ".join(names))
+check("the two GE ports are routed ports",
+      ar1220.groups[0].engine_type == 1 and ar1220.groups[0].encap_flag == 5,
+      "engine_type=%d encap_flag=%d" % (ar1220.groups[0].engine_type,
+                                         ar1220.groups[0].encap_flag))
+check("the eight FE ports are switch ports",
+      ar1220.groups[1].engine_type == 3 and ar1220.groups[1].encap_flag == 0,
+      "engine_type=%d encap_flag=%d" % (ar1220.groups[1].engine_type,
+                                         ar1220.groups[1].encap_flag))
+check("an add-on card in slot 2 gets its own family",
+      board.vrp_name(ar1220.groups[1], 0, slot=2) == "Ethernet2/0/0")
+
+print()
+print("=" * 72)
+print("4. the file the guest reads")
 print("=" * 72)
 
 # the patch script has to produce a file the guest can parse

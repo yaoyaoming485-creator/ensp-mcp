@@ -81,6 +81,28 @@ def board_for(model: str) -> Board | None:
     return BOARDS.get(model.strip().upper())
 
 
+def vrp_name(group: PortGroup, member: int, slot: int = 0) -> str:
+    """The name the VRP gives a port of ``group``.
+
+    The guest builds the interface names itself, out of three things: the
+    port's *family* (the ``port_name`` of the group), the *slot* the port
+    belongs to, and the port's number inside its family.  The official eNSP
+    example configurations show the rule:
+
+    * a plain AR1220 has ``Ethernet0/0/0`` .. ``Ethernet0/0/7`` and
+      ``GigabitEthernet0/0/0`` / ``GigabitEthernet0/0/1``;
+    * an AR1220 with an add-on card in slot 2 has ``Ethernet2/0/0`` ..
+      and ``GigabitEthernet2/0/0`` next to them, and a card with serial
+      ports gives ``Serial2/0/0`` / ``Serial2/0/1``.
+
+    So the number in the interface name is *not* the port's index - the
+    index only says where the port sits on the board.
+    """
+    family = {"GE": "GigabitEthernet", "10GE": "TenGigabitEthernet",
+              "Serial": "Serial"}.get(group.name, "Ethernet")
+    return f"{family}{slot}/0/{member}"
+
+
 def interface_lines(board: Board, guest_ip: str, host_ip: str,
                     host_ports: dict[int, int]) -> list[str]:
     """The ``interface[i] = ...`` lines of a board, in panel order.
