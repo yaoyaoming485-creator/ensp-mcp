@@ -570,3 +570,42 @@ those is empty, so `unregistervm` is reached with no name, fails with
 
 **Open:** what fills `0x474a44`. Not VirtualBox (§7), not this channel's table
 (§10). Since the string-command dispatch is live, the client is what remains.
+
+## 11 The board a guest runs comes from `slotinfo`, not from `resource.cfg`
+
+A guest does not decide its own board. `eNSP_Client.exe`, `VAR_Plugin.dll`
+(CAgent, for the newer `ar1000v` guests) and the guest's own VRP all write
+`resource.cfg`, but the guest's VRP only writes it *after* the host has told it
+what to write: `dev2` carries the template
+
+```
+… port_name:%s cpu_port:%hhu encap_flag:%hhu engine_type:%hhu port_type:%hhu
+   mod_id:%hhu port_id:%hhu phy_id:%u ]
+slotinfo[%u] = %u
+device_type = %u
+system_mac = %hhx-%hhx-%hhx-%hhx-%hhx-%hhx
+rm -f tmp.cfg
+vrpcfg.zip
+```
+
+plus `slotinfo` and `call VOS_Malloc failed: SlotInfo ulIfIndex[0x%x]`, all
+three present in the decrypted `dev2` (and absent from the still-encrypted
+`dev_base_2`, from `dev0`, `dev1` and `agentd`). So the board is
+**slotinfo × the guest's own product table**, and slotinfo arrives over the
+serial pipe as boot configuration — the same named pipe the handshake uses.
+
+This is why a host that only rewrites addresses gets the factory board: the
+stock AR image then runs the **AR201** board (8 switch ports + 1 uplink,
+`device_type = 33`), which `display device` states outright:
+`AR201's Device status … 0 - AR201 Present PowerOn Registered Normal Master`.
+On that board only `Ethernet0/0/8` can hold an address; `Ethernet0/0/0` …
+`Ethernet0/0/7` are switch ports and `interface Ethernet0/0/0` is rejected.
+
+Until slotinfo is sent, a link must be wired to the guest port that carries the
+address (`guestSrc`/`guestTar` in the `.topo`). With that, `ping` works — see
+`agentd-protocol.md` §③f-1.
+
+**Open:** the slotinfo byte layout. The parser is in the board simulator:
+`dev1` carries source paths under
+`/home/qcgao/code/wlan_v2r3_base_ar/cap/mss/arch/board/simulator/…` and the
+message `MSS_IM_Init: load instance's static config information failed!`.
