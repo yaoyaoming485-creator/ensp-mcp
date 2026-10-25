@@ -429,6 +429,54 @@ while `peerport` does not occur at all. See
 The crash itself is in the VRP's main thread — `cap.log` in the guest
 holds the backtrace (`./dev1() [0x815903d]` … `__libc_start_main+0x133`).
 
+### ③f-1 Which port a link must land on — and the ping that proves it
+
+The stock AR image is not the model the topology names. `display device` in
+the guest answers **"AR201's Device status"**, and its `resource.cfg` describes
+the AR201's board: eight `engine_type 3` ports plus one `engine_type 1` uplink,
+`device_type = 33`. The eNSP client rewrites that board from the model every
+time it starts a device (`eNSP_Client.exe` pushes the template at `0x4b53df`,
+filling `cpu_port` with the running panel-port index); a host that only rewrites
+the addresses, as this one did, leaves the guest on the AR201 board.
+
+Consequences, all measured:
+
+* `display interface brief` lists `Ethernet0/0/0` … `Ethernet0/0/8`, all up,
+  but `display ip interface brief` lists **only `Ethernet0/0/8`**. The first
+  eight are switch ports; `interface Ethernet0/0/0` is rejected as an
+  unrecognised command. Only the ninth port can carry an address.
+* VRP `Ethernet0/0/N` is VPORT index N — the same number, because `cpu_port`
+  is the global port index and the guest's sockets are `10000+N` in that order.
+* So a link written against panel ports (`srcIndex`/`tarIndex`, what eNSP
+  itself does) lands on VPORT 0 while the address sits on VPORT 8, and every
+  frame is delivered to a port that has no address. `guestSrc`/`guestTar` in
+  the `.topo` say which guest port a panel port is really wired to.
+
+With the link on guest port 8 on both sides and the addresses on
+`Ethernet0/0/8`, the lab pings:
+
+```
+Reply from 10.0.0.2: bytes=56 Sequence=1 ttl=255 time=1100 ms
+Reply from 10.0.0.2: bytes=56 Sequence=2 ttl=255 time=70 ms
+Reply from 10.0.0.2: bytes=56 Sequence=3 ttl=255 time=40 ms
+Reply from 10.0.0.2: bytes=56 Sequence=4 ttl=255 time=20 ms
+    4 packet(s) transmitted, 4 packet(s) received, 0.00% packet loss
+```
+
+and the relay's classified census shows the whole exchange on one interface —
+one request, one reply, four echo, four answers:
+
+```
+R1 iface 8:   1 x arp-request 10.0.0.1->10.0.0.2
+R1 iface 8:   4 x icmp 10.0.0.1->10.0.0.2
+R2 iface 8:   1 x arp-reply   10.0.0.2->10.0.0.1
+R2 iface 8:   4 x icmp 10.0.0.2->10.0.0.1
+```
+
+The unlinked interfaces keep emitting a non-IP ethertype (`0x0069`) that the
+relay has nowhere to send, and those are counted as orphaned. They are not
+traffic.
+
 ### ③g NAT mode — the same protocol, one address different
 
 A host-only NIC in VirtualBox needs an NDIS filter
