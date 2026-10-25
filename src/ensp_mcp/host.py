@@ -1,4 +1,4 @@
-"""Host-side driver for one eNSP guest device.
+﻿"""Host-side driver for one eNSP guest device.
 
 This is the part that replaces the eNSP client. It runs three things for a
 single device:
@@ -136,6 +136,8 @@ class UdpRelay:
         #: four-byte link handshakes, and datagrams longer than that
         self.handshakes = 0
         self.large = 0
+        #: datagrams for an interface that has no link to forward to
+        self.orphans = 0
 
     def log(self, msg: str) -> None:
         if self.log_prefix:
@@ -220,6 +222,11 @@ class UdpRelay:
                     self.answered += 1
                 except OSError as exc:
                     self.log(f"udp relay: cannot answer interface {iface}: {exc}")
+                continue
+            if peer_ip is None or peer_port is None:
+                # an unlinked interface has nothing to forward to; it still
+                # needs its socket so its handshake gets answered
+                self.orphans += 1
                 continue
             try:
                 # the source port stays the one the guest addressed: that is

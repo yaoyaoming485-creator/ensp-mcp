@@ -271,14 +271,23 @@ class Lab:
         base = INTERFACE_PORT_BASE + self.device_index(dev) * INTERFACES_PER_DEVICE
         return {n: base + n for n in range(INTERFACES_PER_DEVICE)}
 
-    def relay_links(self, dev: LabDevice) -> dict[int, tuple[int, str, int]]:
-        """What the relay needs: interface -> (host port, peer, peer port)."""
+    def relay_links(self, dev: LabDevice) -> dict[int, tuple[int, str | None, int | None]]:
+        """Every interface -> (host port, peer, peer port); peer may be None.
+
+        All interfaces get a socket, not only the linked ones.  The guest's
+        VPORT sends its handshake on *each* interface and only leaves control
+        state once that interface is answered, and the real eNSP host binds one
+        socket per interface too (`CInterface::CreateInterfaces`).  Binding just
+        the linked interfaces leaves the others unable to come up, and a device
+        whose interfaces disagree about being up is exactly what makes its VRP
+        give up about ninety seconds in.
+        """
         ports = self.interface_ports(dev)
         peers = self.peer_links(dev)
-        out: dict[int, tuple[int, str, int]] = {}
-        for iface, (peer_ip, peer_port, _ssid) in peers.items():
-            out[iface] = (ports.get(iface, INTERFACE_PORT_BASE + iface),
-                          peer_ip, peer_port)
+        out: dict[int, tuple[int, str | None, int | None]] = {}
+        for iface, port in ports.items():
+            peer = peers.get(iface)
+            out[iface] = (port, peer[0], peer[1]) if peer else (port, None, None)
         return out
 
     # ------------------------------------------------------------- create --
