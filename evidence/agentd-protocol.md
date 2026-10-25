@@ -347,12 +347,16 @@ channel and is described in [`host-cmd-channel.md`](host-cmd-channel.md).
 ### ③f Where it still breaks
 
 The VRP never ARPs for its peer, so only the 4-byte handshakes travel — and
-those are answered correctly now (see ③b). The earlier reading, that the host
-has to *inject* a peer address the client supplies at run time, rested on that
-handshake carrying an address. It does not: the value is a 1/2/3 handshake, and
-the guest never learns its peer at all — it sends everything to `dest:` and the
-host relays. So the missing piece is not an injection but whatever the VRP
-still wants before it will originate traffic.
+those are answered correctly now (see ③b). **Measurement, not inference:** with
+that answer in place the relay counts datagrams longer than the handshake on the
+interface sockets — 4 on one device and 50 on the other within a single 260 s
+run — so VPORT does leave the control state and real frames are relayed. The
+earlier reading, that the interfaces came up without carrying anything, was an
+artifact of answering the handshake with the peer's address, which the guest
+drops (`0x0804bbb0`).
+
+The guest still never learns a peer address: it sends everything to `dest:` and
+the host relays. So there was never an injection to find.
 
 That the guest cannot be configured with it either is now measured, not
 assumed. The host component does compute per-device `peerip` / `peerport`
