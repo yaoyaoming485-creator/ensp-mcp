@@ -108,6 +108,13 @@ def cmd_lab_patch(args) -> int:
         # the board the image shipped with (the AR201's nine ports), which is
         # what a lab that only needs the interfaces to come up can live with.
         brd = boardmod.board_for(d.model) if getattr(args, "board", False) else None
+        if brd is None and not getattr(args, "board", False):
+            # A lab that was patched with a board keeps it.  "lab up" calls
+            # this without a board to move the addresses, and that rewrites
+            # the image from the pristine base - which would drop the board
+            # again and put the guest back on the image's own ports.
+            if lab.marker_board_state(d) is not None:
+                brd = boardmod.board_for(d.model)
         if getattr(args, "board", False) and brd is None:
             print(f"  {d.name}: no board known for {d.model}, keeping the image's")
         if not lab.needs_patch(d, vdi, dest_port=True, port_map=ports,

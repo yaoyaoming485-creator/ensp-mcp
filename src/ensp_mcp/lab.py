@@ -597,8 +597,23 @@ class Lab:
                     and state.get("disk") == disk.name
                     and state.get("size") == size)
 
-    def mark_patched(self, dev: LabDevice, disk: Path,
-                     dest_port: bool = True,
+    def marker_board_state(self, dev: LabDevice) -> dict | None:
+        """The board an earlier patch wrote, if it wrote one.
+
+        ``lab up`` re-patches the image from the pristine base whenever the
+        addresses change, so a board written by ``lab patch --board`` would be
+        silently dropped by simply starting the lab.  The marker is what makes
+        it stick.
+        """
+        marker = self.patch_marker(dev)
+        try:
+            state = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        board = state.get("board")
+        return board if isinstance(board, dict) else None
+
+    def mark_patched(self, dev: LabDevice, disk: Path,                     dest_port: bool = True,
                      port_map: dict[int, int] | None = None,
                      board: "object | None" = None) -> None:
         marker = self.patch_marker(dev)
