@@ -239,10 +239,29 @@ class Lab:
         out: dict[int, tuple[str, int, str]] = {}
         for link in self.links:
             a, b = link.get("a"), link.get("b")
+            # The panel port (a_port/b_port) is the topology's numbering; the
+            # guest port (a_guest_port/b_guest_port) is the VPORT index
+            # inside the device image.  The eNSP client makes them the same
+            # number, because it writes the guest's port list from the model
+            # in panel order; a guest whose board does not match the model
+            # needs the override, and without it the frames are delivered to
+            # a port the address is not on.
             if a == dev.name:
-                other, mine, theirs = b, link.get("a_port"), link.get("b_port")
+                other = b
+                mine = link.get("a_guest_port")
+                theirs = link.get("b_guest_port")
+                if mine is None:
+                    mine = link.get("a_port")
+                if theirs is None:
+                    theirs = link.get("b_port")
             elif b == dev.name:
-                other, mine, theirs = a, link.get("b_port"), link.get("a_port")
+                other = a
+                mine = link.get("b_guest_port")
+                theirs = link.get("a_guest_port")
+                if mine is None:
+                    mine = link.get("b_port")
+                if theirs is None:
+                    theirs = link.get("a_port")
             else:
                 continue
             if other is None or mine is None or theirs is None:
@@ -324,6 +343,8 @@ class Lab:
                 "a_port": link.get("a_port"), "b_port": link.get("b_port"),
                 "a_if": link.get("a_if"), "b_if": link.get("b_if"),
                 "type": link.get("type"),
+                "a_guest_port": link.get("a_guest_port"),
+                "b_guest_port": link.get("b_guest_port"),
             })
         for i, dev in enumerate(parsed.get("devices", [])):
             vm = f"{name}-{dev['name']}"

@@ -208,10 +208,21 @@ def build(spec: dict, version: str | None = None) -> str:
         ai = _port_index(ra["model"], link, "a_port", "a_if", a)
         bi = _port_index(rb["model"], link, "b_port", "b_if", b)
         line_name = str(link.get("type") or "Copper")
+        # `guestSrc`/`guestTar` are ours, not eNSP's: they say which guest
+        # port (the VPORT index inside the device image) a panel port is
+        # really wired to.  The eNSP client makes the panel port *be* the
+        # guest port, so they are only needed when the guest's board does
+        # not match the model - and eNSP simply ignores attributes it does
+        # not know.
+        extra = ""
+        for attr, key in (("guestSrc", "a_guest_port"), ("guestTar", "b_guest_port")):
+            val = link.get(key)
+            if val is not None:
+                extra += f' {attr}="{int(val)}"'
         lines.append(
             f'        <line srcDeviceID="{ra["id"]}" destDeviceID="{rb["id"]}">\n'
             f'            <interfacePair lineName="{escape(line_name, {chr(34): "&quot;"})}" '
-            f'srcIndex="{ai}" tarIndex="{bi}" />\n'
+            f'srcIndex="{ai}" tarIndex="{bi}"{extra} />\n'
             f"        </line>"
         )
 
@@ -310,6 +321,19 @@ def _as_int(value: str | None, default: int = 0) -> int:
             return default
 
 
+def _opt_int(value: str | None) -> int | None:
+    """Like :func:`_as_int`, but "not written" stays ``None`` instead of 0."""
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        try:
+            return int(float(value))
+        except ValueError:
+            return None
+
+
 def read(path: str | Path) -> dict:
     """Parse a ``.topo`` into the same shape :func:`build` accepts."""
     path = Path(path)
@@ -358,6 +382,9 @@ def read(path: str | Path) -> dict:
                     "b_port": _as_int(pair.get("tarIndex")),
                     "a_if": _if_at(by_id.get(src, {}), pair.get("srcIndex")),
                     "b_if": _if_at(by_id.get(dst, {}), pair.get("tarIndex")),
+                    # optional: which *guest* port the panel port is wired to
+                    "a_guest_port": _opt_int(pair.get("guestSrc")),
+                    "b_guest_port": _opt_int(pair.get("guestTar")),
                 }
             )
 
