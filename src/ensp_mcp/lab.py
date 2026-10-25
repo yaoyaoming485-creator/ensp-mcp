@@ -377,32 +377,6 @@ class Lab:
         out = self._run(["list", "vms"], timeout=120)
         return f'"{dev.vm}"' in out
 
-    def base_snapshot(self) -> str | None:
-        """The snapshot eNSP clones devices from, if the base has one.
-
-        The eNSP client does not copy the base disk for every device: it runs
-        ``clonevm AR_Base --snapshot AR_Base_Link --options link`` (format
-        string at ``0x460018`` in ``eNSP_VBoxServer.exe``), so every device is
-        a linked clone of the same snapshot.  Doing the same makes creating a
-        lab take seconds instead of copying the base image per device.
-
-        Older or repackaged installs may not have the snapshot, so this is
-        best effort and never fatal.
-        """
-        try:
-            out = self._run(["snapshot", self.base_machine(), "list"],
-                            timeout=120)
-        except LabError:
-            return None
-        for line in out.splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("Name:"):
-                continue
-            name = stripped.split(":", 1)[1].split("(", 1)[0].strip()
-            if name:
-                return name
-        return None
-
     def create_vms(self) -> None:
         """Clone one VM per device out of eNSP's base machine."""
         # Only the *missing* VMs need the base machine. The base is eNSP's own
@@ -415,20 +389,27 @@ class Lab:
             print("  all device VMs already exist, skipped")
             return
         base = self.base_machine()
-        snapshot = self.base_snapshot()
         for dev in missing:
             folder = self.root / "vms" / dev.name
             folder.mkdir(parents=True, exist_ok=True)
-            args = ["clonevm", base]
-            if snapshot:
-                print(f"  {dev.vm}: linked clone from {base}/{snapshot} ...")
-                args += ["--snapshot", snapshot, "--options", "link"]
-            else:
-                print(f"  {dev.vm}: full clone from {base} ...")
-            args += ["--name", dev.vm, "--register",
-                     "--basefolder", str(folder)]
-            self._run(args)
+            self._clone(dev, base, folder)
             self._configure_vm(dev)
+
+    def _clone(self, dev: LabDevice, base: str, folder) -> None:
+        """Clone one device out of the base machine, disk and all.
+
+        eNSP itself clones from a snapshot with ``--options link`` (see
+        `evidence/host-cmd-channel.md` §10), which would be much faster.  It
+        cannot be used here yet: `_patch_uart` has to unregister the machine,
+        rewrite its XML and register it again, and unregistering a *linked*
+        clone drops its differencing disk from the media registry - the
+        re-register then fails with "Could not find an open hard disk with
+        UUID ...".  A full clone keeps the disk registered and survives the
+        cycle, so that is what this does.
+        """
+        print(f"  {dev.vm}: cloning from {base} ...")
+        self._run(["clonevm", base, "--name", dev.vm, "--register",
+                   "--basefolder", str(folder)])
 
     def _configure_vm(self, dev: LabDevice) -> None:
         """Give the VM a host-only NIC and a COM2 pipe in client mode."""
