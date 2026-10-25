@@ -802,3 +802,24 @@ leaves the guest exactly as it was: `display device` still answers
 
 What the package is for is still unknown; a guest without it boots and runs,
 so it is not required for the interfaces to come up either.
+
+### ③f-3 The board type is not settable from outside the image (so far)
+
+Three attempts, all measured, all negative. Recording them so nobody spends the
+same evening again:
+
+| what was changed | expected | measured |
+| --- | --- | --- |
+| an official `vrpcfg.zip` copied into `/dev/download/` | the guest would come up on the model's board | `display device` still answers **"AR201's Device Status"**, still nine `Ethernet0/0/*` ports |
+| `device_type` in `resource.cfg` (three variants: untouched, board table, `--device-type`) | the board would follow the number | unchanged, and a ten-line AR1220 interface table added on top makes every port come up **down** |
+| `producttype.efs` written as one little-endian dword (`01 00 00 00`) into `/dev/download/` | the guest reads its board from that file | still **AR201**, still nine ports |
+
+`producttype.efs` does **not exist** in this image, and not anywhere in the
+eNSP installation either (`res\DeviceType` is icons only, `res\resource_template.cfg`
+is a demo template with `@@` placeholders, `items.xml` carries no numeric id).
+The string `flash:/producttype.efs` and the read at `0x8346f06` are real, so the
+guest does try; what it falls back to when the file is missing is what decides
+the board, and that fallback has not been found yet.
+
+Until it is, a link must name the guest port the address sits on
+(`guestSrc`/`guestTar`) - see §③f-1. That works: ping, 4/4, 0% loss.
