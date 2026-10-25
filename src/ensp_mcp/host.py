@@ -108,6 +108,37 @@ class MediaHub:
         return True
 
 
+def classify_frame(data: bytes) -> str:
+    """Name what an Ethernet frame carries, e.g. ``arp-request 10.0.0.1->10.0.0.2``.
+
+    The length census alone cannot tell an ARP request from an ARP reply or
+    from an IP packet, and those three are exactly what tells us *which*
+    guest port an address is configured on: a router answers an ARP request
+    for the address of one of its own interfaces, and it does that on the
+    port that interface belongs to.
+    """
+    if len(data) < 14:
+        return "short"
+    ethertype = int.from_bytes(data[12:14], "big")
+    if ethertype == 0x0806:                      # ARP
+        if len(data) < 42:
+            return "arp?"
+        op = int.from_bytes(data[20:22], "big")
+        spa = ".".join(str(b) for b in data[28:32])
+        tpa = ".".join(str(b) for b in data[38:42])
+        name = {1: "arp-request", 2: "arp-reply"}.get(op, f"arp-op{op}")
+        return f"{name} {spa}->{tpa}"
+    if ethertype == 0x0800:                      # IPv4
+        if len(data) < 34:
+            return "ip?"
+        proto = data[23]
+        src = ".".join(str(b) for b in data[26:30])
+        dst = ".".join(str(b) for b in data[30:34])
+        kind = {1: "icmp", 6: "tcp", 17: "udp"}.get(proto, f"ip{proto}")
+        return f"{kind} {src}->{dst}"
+    return f"ethertype 0x{ethertype:04x}"
+
+
 class UdpRelay:
     """Relay the VRP's interface traffic between linked devices.
 
@@ -120,7 +151,6 @@ class UdpRelay:
     The datagram's source port tells which interface it belongs to, so one
     socket per device is enough.
     """
-
     def __init__(self, host_ip: str, links: dict[int, tuple[int, str, int]],
                  log_prefix: str = ""):
         self.host_ip = host_ip
@@ -167,6 +197,8 @@ class UdpRelay:
         _port, peer_ip, peer_port = self.links[iface]
         # received / handshakes / large / orphans, for this interface only
         counts = [0, 0, 0, 0]
+        # what the interface actually sends, e.g. {"arp-request 10.0.0.1->10.0.0.2": 4}
+        kinds: dict[str, int] = {}
         last_report = time.time()
         while not self._stop.is_set():
             s.settimeout(1.0)
@@ -181,6 +213,9 @@ class UdpRelay:
                     self.log(f"udp relay: iface {iface}: {counts[0]} datagram(s), "
                              f"{counts[1]} four-byte, {counts[2]} longer, "
                              f"{counts[3]} orphaned")
+                    for label, n in sorted(kinds.items(), key=lambda kv: -kv[1])[:6]:
+                        self.log(f"udp relay: iface {iface}:   {n} x {label}")
+                    kinds.clear()
                     last_report = time.time()
                 continue
             except OSError:
@@ -229,6 +264,12 @@ class UdpRelay:
                 except OSError as exc:
                     self.log(f"udp relay: cannot answer interface {iface}: {exc}")
                 continue
+            # A real frame: remember what it is, so the census can name the
+            # traffic instead of only counting bytes.  This is what tells us
+            # which guest port an address is configured on - an ARP request
+            # for that address goes out of exactly that port.
+            label = classify_frame(data)
+            kinds[label] = kinds.get(label, 0) + 1
             if peer_ip is None or peer_port is None:
                 # an unlinked interface has nothing to forward to; it still
                 # needs its socket so its handshake gets answered
