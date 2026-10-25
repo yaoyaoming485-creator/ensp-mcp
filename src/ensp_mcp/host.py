@@ -1,4 +1,4 @@
-﻿"""Host-side driver for one eNSP guest device.
+"""Host-side driver for one eNSP guest device.
 
 This is the part that replaces the eNSP client. It runs three things for a
 single device:
@@ -165,6 +165,8 @@ class UdpRelay:
     def _run(self, iface: int) -> None:
         s = self.socks[iface]
         _port, peer_ip, peer_port = self.links[iface]
+        # received / handshakes / large / orphans, for this interface only
+        counts = [0, 0, 0, 0]
         last_report = time.time()
         while not self._stop.is_set():
             s.settimeout(1.0)
@@ -176,15 +178,18 @@ class UdpRelay:
                 # everything longer than four bytes while it is still there
                 # (`0x0804e508`), and writes no log of its own to read instead.
                 if time.time() - last_report >= 30.0:
-                    self.log(f"udp relay: iface {iface}: {self.received} datagram(s), "
-                             f"{self.handshakes} four-byte, {self.large} longer")
+                    self.log(f"udp relay: iface {iface}: {counts[0]} datagram(s), "
+                             f"{counts[1]} four-byte, {counts[2]} longer, "
+                             f"{counts[3]} orphaned")
                     last_report = time.time()
                 continue
             except OSError:
                 break
             self.received += 1
+            counts[0] += 1
             if len(data) != 4:
                 self.large += 1
+                counts[2] += 1
             # A four-byte datagram is the interface's link handshake, not a
             # question.  The guest's VPORT process sends `htonl(1)` per
             # interface, every 10 ms (`0x0804bd77`, `usleep(0x2710)` at
@@ -208,6 +213,7 @@ class UdpRelay:
             # keeps matching.
             if len(data) == 4:
                 self.handshakes += 1
+                counts[1] += 1
                 # Answer, but do **not** pass the handshake on.  It is a
                 # per-interface exchange between the guest and the host, not
                 # traffic, and forwarding it corrupts state: VPORT records the
@@ -227,6 +233,7 @@ class UdpRelay:
                 # an unlinked interface has nothing to forward to; it still
                 # needs its socket so its handshake gets answered
                 self.orphans += 1
+                counts[3] += 1
                 continue
             try:
                 # the source port stays the one the guest addressed: that is
