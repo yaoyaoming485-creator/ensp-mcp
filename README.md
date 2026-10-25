@@ -177,6 +177,11 @@ interface sockets to a fixed address; if that address is not the one the guest
 actually owns, VRP exits with `Start port 0 fail` /
 `VPORT_Hal_PortEnable failed!`. `scripts/patch_resource.py` rewrites it.
 
+## Operations
+
+The runbook — prerequisites, a lab in five minutes, verifying with ping, and a
+troubleshooting table — is [`docs/operations.md`](docs/operations.md).
+
 ## Install
 
 Requires Python 3.10+ and Oracle VirtualBox. eNSP itself is only needed for the

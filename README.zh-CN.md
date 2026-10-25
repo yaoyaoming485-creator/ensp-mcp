@@ -166,6 +166,10 @@ VPORT_Hal_PortEnable failed! u32Ret = -1
 
 `scripts/patch_resource.py` 负责把地址改成宿主实际下发的那个。
 
+## 操作手册
+
+从零跑通一个 lab、下发配置、验收、故障排查，见 [`docs/operations.zh-CN.md`](docs/operations.zh-CN.md)。
+
 ## 安装
 
 需要 Python 3.10+ 和 Oracle VirtualBox。只有运行时工具才需要 eNSP 本身。
