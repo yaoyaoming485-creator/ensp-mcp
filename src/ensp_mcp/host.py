@@ -191,16 +191,20 @@ class UdpRelay:
             # socket, so the source address the server has registered for us
             # keeps matching.
             if len(data) == 4:
+                # Answer, but do **not** pass the handshake on.  It is a
+                # per-interface exchange between the guest and the host, not
+                # traffic, and forwarding it corrupts state: VPORT records the
+                # source sockaddr of whatever it receives into `iface+0x30`
+                # (`0x0804e363`), so a relayed handshake teaches the peer that
+                # its peer lives at the relay's own address instead of the other
+                # guest's `10000+M`.  It is also the only thing this relay does
+                # that exists solely when a peer is configured - which is why two
+                # devices used to die while a single one survived.
                 try:
                     s.sendto(b"\x00\x00\x00\x02", peer)
                     self.answered += 1
                 except OSError as exc:
                     self.log(f"udp relay: cannot answer interface {iface}: {exc}")
-                try:
-                    s.sendto(data, (peer_ip, peer_port))
-                    self.forwarded += 1
-                except OSError:
-                    pass
                 continue
             try:
                 # the source port stays the one the guest addressed: that is
