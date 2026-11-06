@@ -162,6 +162,15 @@ def vboxmanage_path() -> str:
     return os.environ.get("VBOXMANAGE") or find_vboxmanage()
 
 
+def run_vboxmanage(args: list[str], timeout: float = 120.0) -> subprocess.CompletedProcess:
+    """Run VBoxManage with the given arguments.
+
+    The caller gets the raw result, so it can tell "the machine is locked by
+    another process" from "there is no such machine".
+    """
+    return _run([vboxmanage_path()] + list(args), timeout=timeout)
+
+
 # --------------------------------------------------------------------------
 # VM inventory
 # --------------------------------------------------------------------------
@@ -353,3 +362,13 @@ def _tasklist() -> list[dict]:
             continue
         out.append({"name": parts[0], "pid": int(parts[1]) if parts[1].isdigit() else None})
     return out
+
+
+def process_names() -> dict[int, str]:
+    """``pid -> executable name`` for the processes that are running now.
+
+    Used to name the owner of a TCP connection: the console session that
+    blocks a device belongs to a process, and "which one" is the difference
+    between a useful error and a shrug.
+    """
+    return {p["pid"]: p["name"] for p in _tasklist() if p.get("pid")}
