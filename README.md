@@ -540,6 +540,42 @@ not involved at all — so the console is free and `ensp_vrp_command` works:
                  "state": "running", "agentd": true, "vrp": true } ] }
 ```
 
+### Starting a whole topology with one command
+
+An eNSP topology file is enough to start it. The topology carries the
+device names, their **ssids** (the `id` attribute of each `<dev>`) and the
+links between them, so a lab can be made from the file and brought up
+without the eNSP client ever seeing it:
+
+```sh
+enspctl lab up --root D:\work\lab13 --topo D:\work\lab13.topo
+```
+
+```jsonc
+// ensp_start_devices(topo_path="D:\\work\\lab13.topo", lab_root="D:\\work\\lab13")
+{ "ok": true, "mode": "lab", "ready": true,
+  "created_from_topology": "D:\\work\\lab13\\lab.topo",
+  "devices": [ { "device": "AR1", "vm": "lab13-AR1", "ip": "192.168.56.101",
+                 "state": "running", "agentd": true, "vrp": true } ] }
+```
+
+The devices keep the names the topology gives them, so `AR1` is `AR1` here
+too — and because the eNSP client is not involved, their consoles are free
+and this server can drive them.
+
+The board is written as well: the guest's `resource.cfg` gets the model's
+ports and its `device_type`, so an AR2220 presents its three GE ports
+(`GigabitEthernet0/0/0`…) instead of the AR201's nine that the image
+happens to ship with. The numbers come from eNSP's own template, which it
+writes per device to
+`%LOCALAPPDATA%\eNSP\ConsoleServer\resource\<ssid>\resource.cfg`:
+
+```
+device_type = 3
+interface[0..2]  port_name:GigabitEthernet  encap_flag:5 engine_type:1 port_type:1 mod_id:1
+interface[3..4]  port_name:Serial           encap_flag:0 engine_type:0 port_type:9 mod_id:3
+```
+
 `ensp_list_devices` marks every machine with `managed_by` (`ensp` or
 `local`), so the two kinds can be told apart at a glance.
 

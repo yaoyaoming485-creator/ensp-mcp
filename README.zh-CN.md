@@ -497,6 +497,38 @@ eNSP 才会。
                  "state": "running", "agentd": true, "vrp": true } ] }
 ```
 
+### 一条命令启动整份拓扑
+
+一份 eNSP 拓扑文件就够了。拓扑里带着设备名、设备的 **ssid**（每个 `<dev>`
+的 `id` 属性）和连线，所以可以直接把文件变成 lab 拉起来，全程不用 eNSP 客户端
+参与：
+
+```sh
+enspctl lab up --root D:\work\lab13 --topo D:\work\lab13.topo
+```
+
+```jsonc
+// ensp_start_devices(topo_path="D:\\work\\lab13.topo", lab_root="D:\\work\\lab13")
+{ "ok": true, "mode": "lab", "ready": true,
+  "created_from_topology": "D:\\work\\lab13\\lab.topo",
+  "devices": [ { "device": "AR1", "vm": "lab13-AR1", "ip": "192.168.56.101",
+                 "state": "running", "agentd": true, "vrp": true } ] }
+```
+
+设备名保持拓扑里的名字（这里也是 `AR1`）；而且因为 eNSP 客户端不参与，控制台
+是自由的，本服务端能真的驱动它们。
+
+板型也会写进去：guest 的 `resource.cfg` 会被改成该型号的端口与 `device_type`，
+所以 AR2220 起出来是它的三个 GE 口（`GigabitEthernet0/0/0`…），而不是镜像自带的
+AR201 那九个口。这些数字是**实测**来的，不是猜的——eNSP 会给每台设备写一份模板到
+`%LOCALAPPDATA%\eNSP\ConsoleServer\resource\<ssid>\resource.cfg`：
+
+```
+device_type = 3
+interface[0..2]  port_name:GigabitEthernet  encap_flag:5 engine_type:1 port_type:1 mod_id:1
+interface[3..4]  port_name:Serial           encap_flag:0 engine_type:0 port_type:9 mod_id:3
+```
+
 `ensp_list_devices` 给每台机器标了 `managed_by`（`ensp` 或 `local`），两类一眼
 就能分开。
 
