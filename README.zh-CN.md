@@ -438,6 +438,10 @@ VRP 控制台**只接受一个客户端**。eNSP 客户端会为每个打开过 
 建立会话，并且**一直保持到 eNSP 退出为止**——关掉标签页并不释放它，只有退出
 eNSP 才会。
 
+四设备实验台上实测：这些会话**从设备启动那一刻就存在**，不是开了标签页才有
+——`4× 192.168.56.1:<eph> → 192.168.56.x:40000` 与 `4× :56789`，全部 owned by
+`eNSP_VBoxServer.exe`。
+
 所以 `ensp_vrp_command` 在连接之前先读宿主的 TCP 表。如果控制台被 eNSP 客户端
 占着，这次调用不会去熬一个注定超时的等待，而是直接说清楚是谁占的：
 
@@ -450,6 +454,51 @@ eNSP 才会。
   "action": { "kind": "stop_process", "processes": ["ensp_vboxserver.exe"] }
 }
 ```
+
+### 设备有两种跑法
+
+想用本服务端驱动实验台之前，先搞清楚这一件事。
+
+| | eNSP GUI 里的设备 | 本项目的 lab 里的设备 |
+| --- | --- | --- |
+| 谁启动 | eNSP 客户端 | `ensp_start_devices(lab_root=…)` |
+| 地址从哪来 | eNSP 客户端，串口握手给的 | supervisor，同样握手给的 |
+| 机器名 | `AR_Clone_<ssid>`，**不含**拓扑里的设备名 | 就是设备名 |
+| 控制台被谁占 | eNSP 客户端，从启动那一刻起 | 没人占 |
+| 本服务端能驱动吗 | **不能** | **能** |
+
+所以 eNSP GUI 的设备对本服务端来说是够不着的：机器归客户端管、名字用的是设备
+的 ssid、地址由客户端给、控制台会话也由客户端占着。`ensp_start_devices` 不再说
+「没有这台机器」，而是把这件事讲明白：
+
+```jsonc
+{
+  "ok": false,
+  "devices": [
+    { "device": "AR1", "ok": false,
+      "error_code": "device_needs_ensp_client",
+      "error": "'AR1' is a device of the eNSP GUI, and the eNSP client owns its machine",
+      "action": { "kind": "use_lab_mode", "detail": "ensp_start_devices(lab_root=...)" } }
+  ]
+}
+```
+
+带上 `topo_path` 参数，调用方就能把这种情况和「名字打错了」区分开：名字是给定拓扑
+里的设备 → 是 eNSP 设备；其它不认识的名字 → 就是不认识。
+
+本项目的 lab 正好反过来。`enspctl lab create` 建好 lab，`ensp_start_devices
+(lab_root=…)` 把它拉起来，**eNSP 客户端全程不参与**——控制台是自由的，
+`ensp_vrp_command` 就能真的跑：
+
+```jsonc
+// ensp_start_devices(lab_root="D:\\work\\ensp-guest\\demo\\lab9")
+{ "ok": true, "mode": "lab", "ready": true,
+  "devices": [ { "device": "R1", "vm": "link-R1", "ip": "192.168.56.101",
+                 "state": "running", "agentd": true, "vrp": true } ] }
+```
+
+`ensp_list_devices` 给每台机器标了 `managed_by`（`ensp` 或 `local`），两类一眼
+就能分开。
 
 `ensp_vrp_list_devices` 逐台报告同样的信息，`ensp_status` 一次性报告所有设备。
 
@@ -553,9 +602,10 @@ Time Zone(China-Standard-Time) : UTC-08:00
 | --- | --- |
 | `tests/smoke.py` | 模块级：型号目录、`.topo` 构建/写/读往返、校验失败路径、解析真实 eNSP 拓扑、VirtualBox 盘点、截屏、键盘注入、**真实 VRP 控制台、agentd 控制握手** |
 | `tests/test_console_text.py` | 文本控制台：开机 banner 不能把命令吞掉、没执行的命令必须显式失败、文本通道绝不能碰屏幕代码 |
-| `tests/mcp_client.py` | 按 JSON-RPC stdio 驱动服务器：像 Agent 一样 `initialize`、`tools/list`，然后**逐个调用全部 14 个工具**并检查结果 |
+| `tests/mcp_client.py` | 按 JSON-RPC stdio 驱动服务器：像 Agent 一样 `initialize`、`tools/list`，然后**逐个调用全部 18 个工具**并检查结果 |
 
-`mcp_client.py` 是真正的验收测试 —— 它断言服务器公布了全部 14 个工具，
+`mcp_client.py` 是真正的验收测试 —— 它断言服务器公布了全部 18 个工具，
+注册表与 `tools/list` 一致、每个工具都带着注册表里的元数据，
 且 `ensp_console_screen` 返回的 `content types=['text', 'image']`、
 `mimeType: image/png`。
 

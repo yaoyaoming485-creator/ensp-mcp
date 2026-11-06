@@ -475,6 +475,10 @@ The VRP console serves **one** client. The eNSP client opens a session for
 every device whose CLI tab is open and keeps it for as long as eNSP runs —
 closing the console tab does not release it, only quitting eNSP does.
 
+Measured on a four-device lab: the sessions are there from the moment the
+devices start, not only when a tab is opened — `4x 192.168.56.1:<eph> ->
+192.168.56.x:40000` and `4x :56789`, all owned by `eNSP_VBoxServer.exe`.
+
 `ensp_vrp_command` therefore looks at the host's TCP table *before* it
 connects. If the eNSP client holds the console, the call does not wait out a
 timeout it cannot win; it says so, and names the process:
@@ -491,6 +495,53 @@ timeout it cannot win; it says so, and names the process:
 
 `ensp_vrp_list_devices` reports the same thing per device, and `ensp_status`
 reports it for every device at once.
+
+### Two ways to run a device
+
+This is the one thing to understand before driving a lab from here.
+
+| | a device of the eNSP GUI | a device of a lab of this project |
+| --- | --- | --- |
+| started by | the eNSP client | `ensp_start_devices(lab_root=…)` |
+| gets its address from | the eNSP client, over a serial handshake | the supervisor, over the same handshake |
+| machine name | `AR_Clone_<ssid>` — **not** the device's name | the device's own name |
+| console held by | the eNSP client, from the moment it starts | nobody |
+| this server can drive it | **no** | **yes** |
+
+So a device of the eNSP GUI is out of reach for this server: the client owns
+the machine, names it after the device's ssid, hands the guest its address,
+and keeps the console session. `ensp_start_devices` says exactly that rather
+than "no such machine":
+
+```jsonc
+{
+  "ok": false,
+  "devices": [
+    { "device": "AR1", "ok": false,
+      "error_code": "device_needs_ensp_client",
+      "error": "'AR1' is a device of the eNSP GUI, and the eNSP client owns its machine",
+      "action": { "kind": "use_lab_mode", "detail": "ensp_start_devices(lab_root=...)" } }
+  ]
+}
+```
+
+Pass `topo_path` and the call can tell that case from a typo: a name that is
+a device of the given topology is an eNSP device, and any other unknown name
+is simply unknown.
+
+A lab of this project is the other way round. `enspctl lab create` writes the
+lab, `ensp_start_devices(lab_root=…)` brings it up, and the eNSP client is
+not involved at all — so the console is free and `ensp_vrp_command` works:
+
+```jsonc
+// ensp_start_devices(lab_root="D:\\work\\ensp-guest\\demo\\lab9")
+{ "ok": true, "mode": "lab", "ready": true,
+  "devices": [ { "device": "R1", "vm": "link-R1", "ip": "192.168.56.101",
+                 "state": "running", "agentd": true, "vrp": true } ] }
+```
+
+`ensp_list_devices` marks every machine with `managed_by` (`ensp` or
+`local`), so the two kinds can be told apart at a glance.
 
 ### Capture, and what it needs
 
@@ -598,8 +649,9 @@ Three suites, all green:
 | `tests/mcp_client.py` | drives the server over JSON-RPC stdio like an agent does: `initialize`, `tools/list`, then calls **every** tool and checks the results |
 
 `mcp_client.py` is the real acceptance test — it asserts the server advertises all
-11 tools and that `ensp_console_screen` comes back as `content types=['text', 'image']`
-with `mimeType: image/png`.
+18 tools, that the registry and `tools/list` agree, that every tool carries
+the registry's own metadata, and that `ensp_console_screen` comes back as
+`content types=['text', 'image']` with `mimeType: image/png`.
 
 The tools were then exercised through the DSH harness itself, where they register
 as `mcp__ensp__*`:
