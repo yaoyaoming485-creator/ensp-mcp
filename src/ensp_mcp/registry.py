@@ -218,11 +218,15 @@ TOOLS: tuple[ToolSpec, ...] = (
         summary="Start device virtual machines.",
         returns="JSON with the state of every device that was asked for.",
         requires=(REQUIRES_VBOX, REQUIRES_NOT_PROTECTED),
-        error_codes=("vbox_not_found", "device_not_found", "vm_protected",
+        error_codes=("vbox_not_found", "device_not_found",
+                     "device_needs_ensp_client", "vm_protected",
                      "device_start_failed"),
         notes=("With lab_root the project's own lab supervisor is started "
                "instead, which is what brings a device up with a working "
-               "console and an address."),
+               "console and an address. A device of the eNSP GUI cannot be "
+               "started this way: the eNSP client gives the guest its "
+               "address and names its clones after the device's ssid, so the "
+               "call answers device_needs_ensp_client."),
     ),
     ToolSpec(
         name="ensp_stop_devices",
@@ -230,10 +234,12 @@ TOOLS: tuple[ToolSpec, ...] = (
         summary="Stop device virtual machines.",
         returns="JSON with the state of every device that was asked for.",
         requires=(REQUIRES_VBOX, REQUIRES_NOT_PROTECTED),
-        error_codes=("vbox_not_found", "device_not_found", "vm_protected",
+        error_codes=("vbox_not_found", "device_not_found",
+                     "device_needs_ensp_client", "vm_protected",
                      "device_stop_failed"),
         notes=("The machines are asked to power off gracefully; force=true "
-               "pulls the plug instead."),
+               "pulls the plug instead. A device of the eNSP GUI is owned by "
+               "the eNSP client and answers device_needs_ensp_client."),
     ),
     ToolSpec(
         name="ensp_capture",

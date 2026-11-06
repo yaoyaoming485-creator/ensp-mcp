@@ -389,6 +389,45 @@ try:
           res.get("ok") is False and res.get("error_code") == "no_devices_given",
           f"error_code={res.get('error_code')}")
 
+    # a device of the eNSP GUI: the name is right, the lookup still fails,
+    # and the call has to say why instead of saying "no such machine"
+    ar_topo = str(OUT_DIR / "mcp-ensp-device.topo")
+    ar_spec = {"name": "mcp-ensp-device",
+               "devices": [{"name": "AR1-MCP", "model": "AR2220"}]}
+    call(srv, "ensp_create_topology", {"spec": ar_spec, "out_path": ar_topo})
+
+    blocks = call(srv, "ensp_start_devices",
+                  {"devices": ["AR1-MCP"], "topo_path": ar_topo})
+    res = json.loads(text_of(blocks))
+    row = (res.get("devices") or [{}])[0]
+    check("ensp_start_devices tells an eNSP device from a typo",
+          row.get("error_code") == "device_needs_ensp_client",
+          f"error_code={row.get('error_code')}")
+    check("  and says what to do about it",
+          bool(row.get("action")) and row["action"].get("kind") == "use_lab_mode",
+          json.dumps(row.get("action")))
+
+    blocks = call(srv, "ensp_stop_devices",
+                  {"devices": ["AR1-MCP"], "topo_path": ar_topo})
+    res = json.loads(text_of(blocks))
+    row = (res.get("devices") or [{}])[0]
+    check("ensp_stop_devices says the same about an eNSP device",
+          row.get("error_code") == "device_needs_ensp_client",
+          f"error_code={row.get('error_code')}")
+
+    blocks = call(srv, "ensp_list_devices", {"running_only": False})
+    res = json.loads(text_of(blocks))
+    marked = [d for d in res.get("devices", []) if "managed_by" in d]
+    check("ensp_list_devices says who owns each machine",
+          len(marked) == res.get("count", 0),
+          f"{len(marked)}/{res.get('count')} marked")
+
+    blocks = call(srv, "ensp_status", {})
+    res = json.loads(text_of(blocks))
+    check("ensp_status counts the eNSP-managed machines",
+          "ensp_managed_count" in res,
+          f"ensp_managed_count={res.get('ensp_managed_count')}")
+
     blocks = call(srv, "ensp_capture", {"duration": 3, "backend": "auto"})
     res = json.loads(text_of(blocks))
     check("ensp_capture answers with a machine-readable result",

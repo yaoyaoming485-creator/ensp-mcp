@@ -253,6 +253,9 @@ def ensp_status() -> str:
         out["devices_running"] = [
             {"vm": v.name, "state": v.state} for v in vms if v.running
         ]
+        managed = [v.name for v in vms if vbox.is_ensp_managed(v)]
+        out["ensp_managed_machines"] = managed
+        out["ensp_managed_count"] = len(managed)
     except vbox.VBoxError as exc:
         out["vm_total"] = None
         out["error_vms"] = str(exc)
@@ -293,6 +296,7 @@ def ensp_list_devices(running_only: bool = True) -> str:
             ch = {"vm": v.name, "error": str(exc)}
         ch["uuid"] = v.uuid
         ch["protected"] = v.name in DEFAULT_PROTECTED
+        ch["managed_by"] = "ensp" if vbox.is_ensp_managed(v) else "local"
         rows.append(ch)
     return json.dumps({"ok": True, "count": len(rows), "devices": rows},
                       ensure_ascii=False, indent=2)
@@ -355,11 +359,66 @@ def _resolve_vm(name: str, vms: list[vbox.VmInfo]) -> tuple[vbox.VmInfo | None, 
     return None, "not found"
 
 
+def _topology_device_names(topo_path: str) -> list[str]:
+    """The device names of a topology file, or an empty list."""
+    if not topo_path:
+        return []
+    try:
+        data = topo.read(topo_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return [str(d.get("name", "")) for d in data.get("devices", [])]
+
+
+def _unresolved_device(name: str, topo_path: str, vms: list[vbox.VmInfo],
+                       stopping: bool) -> tuple[str, str, dict]:
+    """Why a device name did not resolve to a machine, and what to do about it.
+
+    A device of the eNSP GUI is the one case where the name is *right* and
+    the lookup still fails: the eNSP client names its clones after the
+    device's ssid (``AR_Clone_<guid>``), not after the device, and it is the
+    client that gives the guest its address.  Saying "no such machine" for
+    that is technically true and practically useless.
+    """
+    managed = [v for v in vms if vbox.is_ensp_managed(v)]
+    in_topology = name in _topology_device_names(topo_path)
+    client_running = bool(vbox.ensp_processes())
+    if not (in_topology or (managed and client_running)):
+        return ("device_not_found",
+                f"no VirtualBox machine named {name!r}",
+                {"kind": "list_machines"})
+
+    if in_topology:
+        reason = (f"{name!r} is a device of the eNSP GUI, and the eNSP client "
+                  "owns its machine")
+    else:
+        reason = (f"{name!r} is most likely a device of the eNSP GUI: the "
+                  "eNSP client owns its machines and is running")
+    if stopping:
+        hint = ("Stop it in the eNSP GUI, or name the machine itself - the "
+                "eNSP client calls its clones AR_Clone_<ssid>, and "
+                "ensp_list_devices lists them. To stop a lab of this project, "
+                "use ensp_stop_devices(lab_root=...).")
+        action = {"kind": "use_ensp_gui"}
+    else:
+        hint = ("Start it in the eNSP GUI. The client also gives the guest its "
+                "address: the guest's agentd gets its IP from the client's "
+                "serial handshake, so a machine started behind the client's "
+                "back boots but never becomes reachable. To drive a device "
+                "from this server, use a lab of this project instead - "
+                "ensp_start_devices(lab_root=...) brings a device up with a "
+                "working console that the eNSP client does not hold.")
+        action = {"kind": "use_lab_mode",
+                  "detail": "ensp_start_devices(lab_root=...)"}
+    return ("device_needs_ensp_client", reason, action)
+
+
 @mcp.tool(meta=registry.meta_for("ensp_start_devices"))
 def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
                        wait: float = 0.0,
                        protected: list[str] = DEFAULT_PROTECTED,
-                       override_protected: bool = False) -> str:
+                       override_protected: bool = False,
+                       topo_path: str = "") -> str:
     """Start device virtual machines.
 
     Two ways to do it, and they are not the same thing:
@@ -367,11 +426,16 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
     * ``lab_root`` -- the project's own lab. The supervisor is started, which
       is what brings the devices up **with an address and a working VRP
       console**, because the guest only answers after the host has done its
-      serial handshake with it.
+      serial handshake with it. The eNSP client is not involved, so it holds
+      no console session either: this is the mode in which this server can
+      actually drive a device.
     * ``devices`` -- plain VirtualBox machines, started headless. This is
-      enough for a machine that already has its addressing; a device of the
-      eNSP GUI needs the eNSP client to hand it its address, so it boots but
-      does not become reachable.
+      enough for a machine that already has its addressing. A device of the
+      eNSP GUI does **not** work this way: the eNSP client gives the guest
+      its address, so a machine started behind the client's back boots but
+      never becomes reachable -- and the client names its clones after the
+      device's ssid, so the device's own name does not even find it. That
+      case is reported as ``device_needs_ensp_client``.
 
     Args:
         devices: the device (or machine) names to start.
@@ -379,6 +443,8 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
         wait: seconds to wait for the devices to answer.
         protected: machine names this server refuses to touch.
         override_protected: start them anyway.
+        topo_path: optional topology the device names come from; it lets the
+            call tell "this is an eNSP device" from "this name is a typo".
     """
     if not devices and not lab_root:
         return _fail("no_devices_given", "neither devices nor lab_root was given",
@@ -424,10 +490,12 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
     for name in devices:
         vm, how = _resolve_vm(name, vms)
         if vm is None:
+            code, reason, action = _unresolved_device(name, topo_path, vms,
+                                                       stopping=False)
             failed = True
             rows.append({"device": name, "ok": False,
-                         "error_code": "device_not_found",
-                         "error": f"no VirtualBox machine named {name!r}",
+                         "error_code": code, "error": reason,
+                         "action": action,
                          "known_machines": [v.name for v in vms][:40]})
             continue
         if vm.name in (protected or []) and not override_protected:
@@ -465,12 +533,18 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
 def ensp_stop_devices(devices: list[str] = [], lab_root: str = "",
                       force: bool = False,
                       protected: list[str] = DEFAULT_PROTECTED,
-                      override_protected: bool = False) -> str:
+                      override_protected: bool = False,
+                      topo_path: str = "") -> str:
     """Stop device virtual machines.
 
     The machines are asked to power off gracefully; ``force`` pulls the plug
     instead. With ``lab_root`` the lab's supervisor is stopped first, so the
     guests are not left waiting for a host that is gone.
+
+    A device of the eNSP GUI is owned by the eNSP client: its machine is
+    named after the device's ssid (``AR_Clone_<guid>``), so the device's own
+    name does not find it, and the client is what started it. That case is
+    reported as ``device_needs_ensp_client``.
 
     Args:
         devices: the device (or machine) names to stop.
@@ -478,6 +552,8 @@ def ensp_stop_devices(devices: list[str] = [], lab_root: str = "",
         force: power off instead of asking nicely.
         protected: machine names this server refuses to touch.
         override_protected: stop them anyway.
+        topo_path: optional topology the device names come from; it lets the
+            call tell "this is an eNSP device" from "this name is a typo".
     """
     if not devices and not lab_root:
         return _fail("no_devices_given", "neither devices nor lab_root was given",
@@ -519,10 +595,12 @@ def ensp_stop_devices(devices: list[str] = [], lab_root: str = "",
     for name in devices:
         vm, how = _resolve_vm(name, vms)
         if vm is None:
+            code, reason, action = _unresolved_device(name, topo_path, vms,
+                                                       stopping=True)
             failed = True
             rows.append({"device": name, "ok": False,
-                         "error_code": "device_not_found",
-                         "error": f"no VirtualBox machine named {name!r}",
+                         "error_code": code, "error": reason,
+                         "action": action,
                          "known_machines": [v.name for v in vms][:40]})
             continue
         if vm.name in (protected or []) and not override_protected:

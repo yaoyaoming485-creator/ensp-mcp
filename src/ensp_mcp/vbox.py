@@ -187,6 +187,30 @@ class VmInfo:
         return self.state == "running"
 
 
+def ensp_device_dir() -> Path:
+    """Where the eNSP client keeps the machines it clones for a topology."""
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    return Path(base) / "eNSP" / "VBoxServer" / "devices"
+
+
+def is_ensp_managed(vm: VmInfo) -> bool:
+    """Does the eNSP client own this machine?
+
+    The eNSP client clones a device out of ``AR_Base`` and leaves it in
+    ``%LOCALAPPDATA%\\eNSP\\VBoxServer\\devices\\<ssid>\\``, under a name that
+    carries the **ssid** and not the name of the device in the topology
+    (``AR_Clone_<guid>``).  So a machine of the eNSP GUI cannot be found by
+    the device's name, and a device of one of this project's labs always can.
+    """
+    if vm.cfg_file:
+        try:
+            Path(vm.cfg_file).resolve().relative_to(ensp_device_dir().resolve())
+            return True
+        except (ValueError, OSError):
+            pass
+    return vm.name.startswith("AR_Clone_")
+
+
 def list_vms() -> list[VmInfo]:
     vm = vboxmanage_path()
     out = _run([vm, "list", "vms"]).stdout
