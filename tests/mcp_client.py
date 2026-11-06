@@ -159,9 +159,57 @@ try:
         "ensp_vrp_list_devices",
         "ensp_vrp_command",
         "ensp_vrp_agent_handshake",
+        "ensp_start_devices",
+        "ensp_stop_devices",
+        "ensp_capture",
+        "ensp_tool_registry",
     }
     missing = expected - set(tools)
     check("all expected tools advertised", not missing, f"missing={sorted(missing)}")
+    check("no tool outside the expected set", not (set(tools) - expected),
+          f"extra={sorted(set(tools) - expected)}")
+
+    # ---- the registry is the single source of truth --------------------
+    print()
+    blocks = call(srv, "ensp_tool_registry", {})
+    reg = json.loads(text_of(blocks))
+    registered = {t["name"] for t in reg.get("tools", [])}
+    check("ensp_tool_registry", reg.get("ok") is not False and reg.get("count", 0) > 0,
+          f"{reg.get('count')} tools in the registry")
+    check("registry and tools/list agree", registered == set(tools),
+          f"registry-only={sorted(registered - set(tools))} "
+          f"list-only={sorted(set(tools) - registered)}")
+    meta_ok = []
+    for name, tool in sorted(tools.items()):
+        meta = tool.get("_meta") or {}
+        spec = next((t for t in reg.get("tools", []) if t["name"] == name), None)
+        if spec is None:
+            meta_ok.append(f"{name}: not in the registry")
+            continue
+        if (meta.get("requires") or []) != spec.get("requires", []):
+            meta_ok.append(f"{name}: requires differ")
+        if (meta.get("error_codes") or []) != spec.get("error_codes", []):
+            meta_ok.append(f"{name}: error_codes differ")
+        for req in meta.get("requires") or []:
+            if not req.get("id") or not req.get("error_code") or not req.get("remedy"):
+                meta_ok.append(f"{name}: an incomplete requirement")
+    check("every tool carries the registry's metadata", not meta_ok,
+          "; ".join(meta_ok[:4]))
+
+    # ---- a failing call must be machine readable ------------------------
+    print()
+    blocks = call(srv, "ensp_vrp_command", {"guest_ip": "192.168.56.254",
+                                            "commands": []})
+    bad = json.loads(text_of(blocks))
+    check("a failing call names an error code", bad.get("ok") is False
+          and bool(bad.get("error_code")) and bool(bad.get("error")),
+          f"error_code={bad.get('error_code')}")
+
+    blocks = call(srv, "ensp_open_topology", {"path": "D:\\no\\such\\lab.topo"})
+    bad = json.loads(text_of(blocks))
+    check("ensp_open_topology reports a missing file, not a crash",
+          bad.get("ok") is False and bad.get("error_code") == "topo_not_found",
+          f"error_code={bad.get('error_code')}")
 
     print()
     # ---- topology -------------------------------------------------------
@@ -316,6 +364,47 @@ try:
             else:
                 check("ensp_vrp_agent_handshake", False,
                       "no device answered the control handshake")
+
+    # ---- lifecycle and capture ------------------------------------------
+    print()
+    blocks = call(srv, "ensp_start_devices", {"devices": ["no-such-machine-xyz"]})
+    res = json.loads(text_of(blocks))
+    check("ensp_start_devices reports an unknown machine",
+          res.get("ok") is False and res.get("devices")
+          and res["devices"][0].get("error_code") == "device_not_found",
+          f"ok={res.get('ok')} code="
+          f"{(res.get('devices') or [{}])[0].get('error_code')}")
+
+    blocks = call(srv, "ensp_stop_devices", {"devices": ["KVM-Host"]})
+    res = json.loads(text_of(blocks))
+    check("ensp_stop_devices refuses a protected machine",
+          res.get("ok") is False and res.get("devices")
+          and res["devices"][0].get("error_code") == "vm_protected",
+          f"ok={res.get('ok')} code="
+          f"{(res.get('devices') or [{}])[0].get('error_code')}")
+
+    blocks = call(srv, "ensp_stop_devices", {})
+    res = json.loads(text_of(blocks))
+    check("ensp_stop_devices refuses an empty request",
+          res.get("ok") is False and res.get("error_code") == "no_devices_given",
+          f"error_code={res.get('error_code')}")
+
+    blocks = call(srv, "ensp_capture", {"duration": 3, "backend": "auto"})
+    res = json.loads(text_of(blocks))
+    check("ensp_capture answers with a machine-readable result",
+          res.get("ok") is True or bool(res.get("error_code")),
+          ("ok" if res.get("ok") else res.get("error_code"))
+          + (f" backend={res.get('backend')}" if res.get("ok") else ""))
+    if res.get("ok"):
+        summary = res.get("summary") or {}
+        check("  the capture was read back into IP headers",
+              "dscp_distribution" in summary,
+              f"{summary.get('ipv4_packets')} IPv4 packets, "
+              f"{len(summary.get('flows', []))} flows")
+    else:
+        check("  a failed capture explains itself",
+              bool(res.get("hint")) and bool(res.get("attempts")),
+              res.get("error", "")[:90])
 
     print()
     check("no tool call returned a JSON-RPC error", True)
