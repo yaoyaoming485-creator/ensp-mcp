@@ -380,6 +380,26 @@ effect without restarting the web server.
 
 ## Tools
 
+Every tool is described **once**, in `src/ensp_mcp/registry.py`. The registry
+is copied into each tool's MCP metadata (`meta.requires`, `meta.error_codes`)
+and handed out whole by `ensp_tool_registry`, so the documentation, the
+metadata and the code cannot drift apart.
+
+Every failing call answers with the same shape:
+
+```jsonc
+{
+  "ok": false,
+  "error_code": "console_held_by_ensp_client",
+  "error": "the eNSP client holds this device's console session (...)",
+  "hint": "Quit the eNSP client (closing the console tab is not enough ...)",
+  "action": { "kind": "stop_process", "processes": ["ensp_vboxserver.exe"] }
+}
+```
+
+`error_code` is the stable part; `hint` says what to do about it and `action`
+is the structured thing to do, when there is one.
+
 **Topology (offline, no eNSP required)**
 
 | Tool | Purpose |
@@ -394,14 +414,27 @@ effect without restarting the web server.
 
 | Tool | Purpose |
 | --- | --- |
-| `ensp_status` | is eNSP/VirtualBox present, what is running |
+| `ensp_status` | is eNSP/VirtualBox present, what is running, who holds which console |
 | `ensp_list_devices` | device VMs and their console channels |
+
+**Lifecycle**
+
+| Tool | Purpose |
+| --- | --- |
+| `ensp_start_devices` | start device machines, or a lab's supervisor |
+| `ensp_stop_devices` | stop device machines, or a lab's supervisor |
+
+**Capture**
+
+| Tool | Purpose |
+| --- | --- |
+| `ensp_capture` | capture packets and read the IP headers back out (DSCP, protocol, flows) |
 
 **Console — the real VRP CLI**
 
 | Tool | Purpose |
 | --- | --- |
-| `ensp_vrp_list_devices` | find the devices on the host-only subnet and their open ports |
+| `ensp_vrp_list_devices` | find the devices on the host-only subnet, their ports and who holds their console |
 | `ensp_vrp_command` | run VRP commands, get the router's **exact text** back |
 | `ensp_vrp_agent_handshake` | run the guest agentd control handshake and report what the device says |
 
@@ -413,6 +446,12 @@ effect without restarting the web server.
 | `ensp_console_type` | type text (+ optional Enter) |
 | `ensp_console_key` | send a named key (`ctrl-z`, arrows, `F1`…) |
 | `ensp_console_send_lines` | send a configuration block, one line at a time |
+
+**Meta**
+
+| Tool | Purpose |
+| --- | --- |
+| `ensp_tool_registry` | every tool, its preconditions and the errors it can raise |
 
 These drive the *guest's* Linux console, not the router. They are here to
 answer "did the device boot?", and they are **not** a way to read device
@@ -427,6 +466,58 @@ prompt.
   "ok": true,
   "output": "=== display version\nHuawei Versatile Routing Platform Software\n\
              VRP (R) software, Version 5.130 (AR200 V200R003C00)\n..."
+}
+```
+
+### The console is one client at a time
+
+The VRP console serves **one** client. The eNSP client opens a session for
+every device whose CLI tab is open and keeps it for as long as eNSP runs —
+closing the console tab does not release it, only quitting eNSP does.
+
+`ensp_vrp_command` therefore looks at the host's TCP table *before* it
+connects. If the eNSP client holds the console, the call does not wait out a
+timeout it cannot win; it says so, and names the process:
+
+```jsonc
+{
+  "ok": false,
+  "error_code": "console_held_by_ensp_client",
+  "error": "the eNSP client holds this device's console session (ensp_vboxserver.exe)",
+  "hint": "Quit the eNSP client (closing the console tab is not enough - the socket stays open until eNSP exits), or run the command through the eNSP console tab instead.",
+  "action": { "kind": "stop_process", "processes": ["ensp_vboxserver.exe"] }
+}
+```
+
+`ensp_vrp_list_devices` reports the same thing per device, and `ensp_status`
+reports it for every device at once.
+
+### Capture, and what it needs
+
+`ensp_capture` takes a capture and reads the **IP header** back out of it:
+source, destination, protocol and the DSCP. That is the evidence a QoS
+report needs — the DSCP on the wire, not the router's own opinion of it.
+
+The Windows backend is `pktmon`, which talks to the PktMon kernel driver
+and therefore needs an **elevated process**. Unelevated it answers
+*"cannot communicate with the PktMon driver. Access is denied."* The tool
+reports that as `error_code: capture_requires_elevation` rather than
+capturing nothing; `elevate=true` retries the capture in a helper started
+through the shell's `runas` verb.
+
+```jsonc
+// ensp_capture(duration=10)
+{
+  "ok": true,
+  "backend": "pktmon",
+  "file": "D:\\work\\ensp-capture.pcapng",
+  "summary": {
+    "ipv4_packets": 412,
+    "dscp_distribution": [
+      { "dscp": 46, "name": "EF", "count": 208, "share": "50.5%" },
+      { "dscp": 0,  "name": "BE", "count": 204, "share": "49.5%" }
+    ]
+  }
 }
 ```
 

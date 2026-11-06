@@ -346,6 +346,25 @@ DSH 的 MCP 配置片段：
 
 ## 工具
 
+每个工具**只描述一次**，位置是 `src/ensp_mcp/registry.py`。注册表会复制进每个
+工具的 MCP 元数据（`meta.requires`、`meta.error_codes`），同时由
+`ensp_tool_registry` 整体输出——所以文档、元数据和代码不会各说各话。
+
+所有失败的调用都返回同一个形状：
+
+```jsonc
+{
+  "ok": false,
+  "error_code": "console_held_by_ensp_client",
+  "error": "the eNSP client holds this device's console session (...)",
+  "hint": "Quit the eNSP client (closing the console tab is not enough ...)",
+  "action": { "kind": "stop_process", "processes": ["ensp_vboxserver.exe"] }
+}
+```
+
+`error_code` 是稳定可机读的部分；`hint` 说该怎么办；`action` 是能自动化的
+结构化动作（如果有的话）。
+
 **拓扑**
 
 | 工具 | 作用 |
@@ -360,14 +379,27 @@ DSH 的 MCP 配置片段：
 
 | 工具 | 作用 |
 | --- | --- |
-| `ensp_status` | eNSP / VirtualBox 是否在、什么在跑 |
+| `ensp_status` | eNSP / VirtualBox 是否在、什么在跑、谁占着哪个控制台 |
 | `ensp_list_devices` | 设备 VM 及其控制通道 |
+
+**设备生命周期**
+
+| 工具 | 作用 |
+| --- | --- |
+| `ensp_start_devices` | 启动设备虚拟机，或拉起一个 lab 的 supervisor |
+| `ensp_stop_devices` | 停止设备虚拟机，或停掉一个 lab 的 supervisor |
+
+**抓包**
+
+| 工具 | 作用 |
+| --- | --- |
+| `ensp_capture` | 抓包，并把 IP 首部读回来（DSCP、协议、流表） |
 
 **真实 VRP CLI**
 
 | 工具 | 作用 |
 | --- | --- |
-| `ensp_vrp_list_devices` | 找出 host-only 网段上的设备及其开放的端口 |
+| `ensp_vrp_list_devices` | 找出 host-only 网段上的设备、开放的端口，以及谁占着它的控制台 |
 | `ensp_vrp_command` | 执行 VRP 命令，返回路由器的**精确文本** |
 | `ensp_vrp_agent_handshake` | 跑一遍 agentd 控制握手，回报设备说了什么 |
 
@@ -380,6 +412,12 @@ DSH 的 MCP 配置片段：
 | `ensp_console_key` | 发具名按键（`ctrl-z`、方向键、`F1`…） |
 | `ensp_console_send_lines` | 逐行发送一段配置 |
 
+**元信息**
+
+| 工具 | 作用 |
+| --- | --- |
+| `ensp_tool_registry` | 全部工具、前置条件与可能出现的错误码 |
+
 这几个工具驱动的是 **guest 的 Linux 控制台**，不是路由器本身；它们只用来回答
 「设备起来了吗？」，**不作为读取设备状态的手段**：屏幕是位图，本项目不对它做
 OCR。凡是要跟路由器说话，都用 `ensp_vrp_command`：它给文本、不掉字符、
@@ -391,6 +429,53 @@ OCR。凡是要跟路由器说话，都用 `ensp_vrp_command`：它给文本、�
   "ok": true,
   "output": "=== display version\nHuawei Versatile Routing Platform Software\n\
              VRP (R) software, Version 5.130 (AR200 V200R003C00)\n..."
+}
+```
+
+### 控制台同一时刻只服务一个客户端
+
+VRP 控制台**只接受一个客户端**。eNSP 客户端会为每个打开过 CLI 标签页的设备
+建立会话，并且**一直保持到 eNSP 退出为止**——关掉标签页并不释放它，只有退出
+eNSP 才会。
+
+所以 `ensp_vrp_command` 在连接之前先读宿主的 TCP 表。如果控制台被 eNSP 客户端
+占着，这次调用不会去熬一个注定超时的等待，而是直接说清楚是谁占的：
+
+```jsonc
+{
+  "ok": false,
+  "error_code": "console_held_by_ensp_client",
+  "error": "the eNSP client holds this device's console session (ensp_vboxserver.exe)",
+  "hint": "Quit the eNSP client (closing the console tab is not enough - the socket stays open until eNSP exits), or run the command through the eNSP console tab instead.",
+  "action": { "kind": "stop_process", "processes": ["ensp_vboxserver.exe"] }
+}
+```
+
+`ensp_vrp_list_devices` 逐台报告同样的信息，`ensp_status` 一次性报告所有设备。
+
+### 抓包，以及它需要什么
+
+`ensp_capture` 抓包，然后把 **IP 首部**读回来：源、目的、协议和 DSCP。这正是
+QoS 报告需要的证据——链路上的 DSCP，而不是路由器自己以为的 DSCP。
+
+Windows 后端是 `pktmon`，它要跟 PktMon 内核驱动说话，所以**必须提权**。不
+提权时它只会回一句「无法与 PktMon 驱动程序通信。拒绝访问。」工具会把这个报成
+`error_code: capture_requires_elevation`，而不是给你一个空包；`elevate=true`
+会让一个通过 shell `runas` 拉起的辅助进程去抓。
+
+```jsonc
+// ensp_capture(duration=10)
+{
+  "ok": true,
+  "backend": "pktmon",
+  "file": "D:\\work\\ensp-capture.pcapng",
+  "summary": {
+    "ipv4_packets": 412,
+    "dscp_distribution": [
+      { "dscp": 46, "name": "EF", "count": 208, "share": "50.5%" },
+      { "dscp": 0,  "name": "BE", "count": 204, "share": "49.5%" }
+    ]
+  }
 }
 ```
 
