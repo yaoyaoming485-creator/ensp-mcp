@@ -413,6 +413,82 @@ def _unresolved_device(name: str, topo_path: str, vms: list[vbox.VmInfo],
     return ("device_needs_ensp_client", reason, action)
 
 
+def _lab_needs_preparation(lab) -> bool:
+    """Do the lab's machines still have to be made?
+
+    Cloning a machine and rewriting its image takes minutes, and a tool call
+    may not block for that long, so the work is done in the background.
+    """
+    for d in lab.devices:
+        if not lab.vm_exists(d):
+            return True
+        disk = lab.device_disk(d)
+        if disk is None:
+            return True
+        if lab.needs_patch(d, disk, dest_port=True,
+                           port_map=lab.interface_ports(d)):
+            return True
+    return False
+
+
+def _spawn_lab_job(lab_root: str, topo_path: str = "") -> int:
+    """Run ``enspctl lab up`` detached, and return its pid.
+
+    The job makes the machines, rewrites their images and starts the
+    supervisor; ``ensp_lab_status`` reports how far it got.
+    """
+    import subprocess
+    import sys
+
+    args = [sys.executable, "-m", "ensp_mcp.cli", "lab", "up", "--root", str(lab_root)]
+    if topo_path:
+        args += ["--topo", str(topo_path)]
+    root = Path(lab_root)
+    root.mkdir(parents=True, exist_ok=True)
+    log = open(root / "lab-up.log", "a", encoding="utf-8")
+    flags = 0
+    if os.name == "nt":
+        flags = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                 | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                 | getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    proc = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, creationflags=flags)
+    return proc.pid
+
+
+@mcp.tool(meta=registry.meta_for("ensp_lab_status"))
+def ensp_lab_status(lab_root: str) -> str:
+    """The state of a lab: the supervisor, and every device in it.
+
+    Use it after ``ensp_start_devices``: the machines have to be cloned and
+    their images rewritten, which takes minutes, so that work runs in the
+    background and this is how the caller watches it.
+
+    Args:
+        lab_root: a lab directory of this project.
+    """
+    from . import lab as labmod
+    from . import supervise
+    try:
+        lab = labmod.Lab.load(lab_root)
+    except Exception as exc:  # noqa: BLE001
+        return _fail("lab_not_found", f"{type(exc).__name__}: {exc}",
+                     hint="The directory has to be a lab this project created.")
+    state = lab.status()
+    log = Path(lab_root) / "lab-up.log"
+    tail = []
+    if log.is_file():
+        tail = log.read_text(encoding="utf-8", errors="replace").splitlines()[-15:]
+    return json.dumps({
+        "ok": True,
+        "lab": lab.name,
+        "root": str(lab.root),
+        "devices": state.get("devices", []),
+        "supervisor": state.get("supervisor", {}),
+        "lab_up_log": tail,
+    }, ensure_ascii=False, indent=2)
+
+
 @mcp.tool(meta=registry.meta_for("ensp_start_devices"))
 def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
                        wait: float = 0.0,
@@ -428,7 +504,9 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
       console**, because the guest only answers after the host has done its
       serial handshake with it. The eNSP client is not involved, so it holds
       no console session either: this is the mode in which this server can
-      actually drive a device.
+      actually drive a device.  With ``topo_path`` as well, a lab is created
+      from that topology first - its device names, its ssids and its links
+      all come from the file - so **one call starts a whole topology**.
     * ``devices`` -- plain VirtualBox machines, started headless. This is
       enough for a machine that already has its addressing. A device of the
       eNSP GUI does **not** work this way: the eNSP client gives the guest
@@ -443,8 +521,9 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
         wait: seconds to wait for the devices to answer.
         protected: machine names this server refuses to touch.
         override_protected: start them anyway.
-        topo_path: optional topology the device names come from; it lets the
-            call tell "this is an eNSP device" from "this name is a typo".
+        topo_path: the topology the devices come from.  With ``lab_root`` it
+            is the lab that is created; without it, it lets the call tell
+            "this is an eNSP device" from "this name is a typo".
     """
     if not devices and not lab_root:
         return _fail("no_devices_given", "neither devices nor lab_root was given",
@@ -453,16 +532,60 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
     if lab_root:
         from . import lab as labmod
         from . import supervise
+        root = Path(lab_root)
+        created = None
+        if topo_path and not (root / "lab.json").is_file():
+            # the topology is the source of the devices: its names, its ssids
+            # and its links all come from the file
+            try:
+                created = labmod.Lab.create(root.name or "lab", root, topo_path)
+            except Exception as exc:  # noqa: BLE001
+                return _fail("lab_create_failed", f"{type(exc).__name__}: {exc}",
+                             hint="The topology could not be turned into a lab; "
+                                  "check the path and the file.")
         try:
             lab = labmod.Lab.load(lab_root)
         except Exception as exc:  # noqa: BLE001
             return _fail("lab_not_found", f"{type(exc).__name__}: {exc}",
                          hint="The directory has to be a lab this project created.")
         problems = []
+        patched = None
+        if _lab_needs_preparation(lab):
+            # cloning a machine and rewriting its image takes minutes, and a
+            # tool call may not block for that long: the work runs in the
+            # background and ensp_lab_status reports how far it got
+            pid = _spawn_lab_job(lab_root, topo_path)
+            return json.dumps({
+                "ok": True,
+                "mode": "lab",
+                "state": "preparing",
+                "lab": lab.name,
+                "root": str(lab.root),
+                "pid": pid,
+                "created_from_topology": str(created.topo_path) if created else None,
+                "planned_devices": [
+                    {"device": d.name, "vm": d.vm, "ip": d.ip,
+                     "model": d.model, "ssid": d.device_id.rstrip("\x00")}
+                    for d in lab.devices
+                ],
+                "note": "the machines are being cloned and their images "
+                        "rewritten; poll ensp_lab_status(lab_root=...) until "
+                        "the devices answer",
+                "problems": problems,
+            }, ensure_ascii=False, indent=2)
         try:
             lab.create_vms()
         except Exception as exc:  # noqa: BLE001
             problems.append(f"creating the machines failed: {exc}")
+        # the guest's resource.cfg has to point at the lab's addresses, and at
+        # the model's board, before the machines are started
+        try:
+            total, failed = lab.patch_devices(with_board=True)
+            patched = f"{total} socket line(s) patched"
+            if failed:
+                problems.append("could not patch: " + ", ".join(failed))
+        except Exception as exc:  # noqa: BLE001
+            problems.append(f"patching the images failed: {exc}")
         try:
             supervise.spawn(lab_root)
         except Exception as exc:  # noqa: BLE001
@@ -475,6 +598,8 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
             "lab": lab.name,
             "root": str(lab.root),
             "ready": ready,
+            "created_from_topology": str(created.topo_path) if created else None,
+            "patched": patched,
             "devices": rows,
             "problems": problems,
             "log": str(supervise.log_file(lab.root)),

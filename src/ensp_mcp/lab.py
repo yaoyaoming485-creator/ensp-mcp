@@ -499,14 +499,37 @@ class Lab:
         for rule in self.nat_rules(dev):
             self._run(["modifyvm", dev.vm, "--natpf1", rule])
 
+    def _vbox_path(self, dev: LabDevice, timeout: float = 30.0) -> Path:
+        """The machine's ``.vbox`` file, waiting for it to be in place.
+
+        ``clonevm`` returns before VirtualBox's background service has moved
+        the new machine's files to their folder, so the file can be missing
+        for a moment right after a clone.  Asking again is cheaper than
+        failing the whole lab over it.
+        """
+        end = time.time() + timeout
+        last: Path | None = None
+        while True:
+            try:
+                cfg = self._run(["showvminfo", dev.vm, "--machinereadable"])
+                # VirtualBox's machinereadable output is not case-consistent:
+                # it prints "name=" but "CfgFile=".
+                m = re.search(r'^[Cc]fg[Ff]ile="(.+)"', cfg, re.M)
+                if m:
+                    last = Path(m.group(1))
+                    if last.is_file():
+                        return last
+            except LabError:
+                pass
+            if time.time() >= end:
+                break
+            time.sleep(0.5)
+        raise LabError(
+            f"the .vbox of {dev.vm} is not in place"
+            + (f" (looked for {last})" if last else ""))
+
     def _patch_uart(self, dev: LabDevice) -> None:
-        cfg = self._run(["showvminfo", dev.vm, "--machinereadable"])
-        # VirtualBox's machinereadable output is not case-consistent: it prints
-        # "name=" but "CfgFile=".
-        m = re.search(r'^[Cc]fg[Ff]ile="(.+)"', cfg, re.M)
-        if not m:
-            raise LabError(f"cannot find the .vbox path of {dev.vm}")
-        path = Path(m.group(1))
+        path = self._vbox_path(dev)
         text = path.read_text(encoding="utf-8", errors="replace")
         pipe = dev.pipe.replace("\\", "\\\\")
         new_port = (f'<Port slot="1" enabled="true" IOBase="0x2f8" IRQ="3" '
@@ -560,6 +583,55 @@ class Lab:
         return None
 
     # ------------------------------------------------------------- patch --
+    def patch_devices(self, with_board: bool = False) -> tuple[int, list[str]]:
+        """Rewrite each device's ``resource.cfg`` so VRP can bind its sockets.
+
+        The guest's file pins the interface sockets to a fixed address; when
+        the address does not match the one the host hands over, VRP dies with
+        ``VPORT_Hal_PortEnable failed!``.  Rewriting it fixes that.
+
+        With ``with_board`` the file also gets the model's board, so the guest
+        presents the model's ports (an AR2220's three GE ports) instead of the
+        ones the image shipped with (the AR201's nine).
+
+        Returns the number of socket lines written and the devices that
+        failed - a device that could not be patched is an error, because its
+        guest would not come up.
+        """
+        from . import board as boardmod
+        from . import rescfg
+
+        total = 0
+        failed: list[str] = []
+        for d in self.devices:
+            vdi = self.device_disk(d)
+            if vdi is None:
+                failed.append(d.name)
+                continue
+            ports = self.interface_ports(d)
+            brd = boardmod.board_for(d.model) if with_board else None
+            if brd is None and not with_board:
+                # A lab that was patched with a board keeps it.  "lab up" calls
+                # this without a board to move the addresses, and that rewrites
+                # the image from the pristine base - which would drop the board
+                # again and put the guest back on the image's own ports.
+                if self.marker_board_state(d) is not None:
+                    brd = boardmod.board_for(d.model)
+            if not self.needs_patch(d, vdi, dest_port=True, port_map=ports,
+                                    board=brd):
+                continue
+            try:
+                n, new_disk = rescfg.rewrite_vdi(
+                    vdi, d.ip, self.guest_host_ip, vm_name=d.vm,
+                    media_port=d.media_port, port_map=ports, board=brd)
+            except rescfg.ResourceCfgError:
+                failed.append(d.name)
+                continue
+            total += n
+            self.mark_patched(d, new_disk, dest_port=True, port_map=ports,
+                              board=brd)
+        return total, failed
+
     def patch_marker(self, dev: LabDevice) -> Path:
         return self.root / "vms" / dev.name / ".enspctl-patched.json"
 

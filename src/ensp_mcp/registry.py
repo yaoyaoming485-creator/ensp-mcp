@@ -220,13 +220,17 @@ TOOLS: tuple[ToolSpec, ...] = (
         requires=(REQUIRES_VBOX, REQUIRES_NOT_PROTECTED),
         error_codes=("vbox_not_found", "device_not_found",
                      "device_needs_ensp_client", "vm_protected",
-                     "device_start_failed"),
+                     "device_start_failed", "lab_create_failed",
+                     "lab_not_found"),
         notes=("With lab_root the project's own lab supervisor is started "
                "instead, which is what brings a device up with a working "
-               "console and an address. A device of the eNSP GUI cannot be "
-               "started this way: the eNSP client gives the guest its "
-               "address and names its clones after the device's ssid, so the "
-               "call answers device_needs_ensp_client."),
+               "console and an address. With topo_path as well, a lab is "
+               "made from that topology first - its device names, its ssids "
+               "and its links all come from the file - so one call starts a "
+               "whole topology. A device of the eNSP GUI cannot be started "
+               "this way: the eNSP client gives the guest its address and "
+               "names its clones after the device's ssid, so the call answers "
+               "device_needs_ensp_client."),
     ),
     ToolSpec(
         name="ensp_stop_devices",
@@ -240,6 +244,16 @@ TOOLS: tuple[ToolSpec, ...] = (
         notes=("The machines are asked to power off gracefully; force=true "
                "pulls the plug instead. A device of the eNSP GUI is owned by "
                "the eNSP client and answers device_needs_ensp_client."),
+    ),
+    ToolSpec(
+        name="ensp_lab_status",
+        category="lifecycle",
+        summary="The state of a lab: the supervisor and every device in it.",
+        returns="JSON with the per-device state and the tail of the log.",
+        error_codes=("lab_not_found",),
+        notes=("The machines of a lab are cloned and their images rewritten in "
+               "the background, because that takes minutes; this is how the "
+               "caller watches it."),
     ),
     ToolSpec(
         name="ensp_capture",

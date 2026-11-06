@@ -161,6 +161,7 @@ try:
         "ensp_vrp_agent_handshake",
         "ensp_start_devices",
         "ensp_stop_devices",
+        "ensp_lab_status",
         "ensp_capture",
         "ensp_tool_registry",
     }
@@ -427,6 +428,12 @@ try:
     check("ensp_status counts the eNSP-managed machines",
           "ensp_managed_count" in res,
           f"ensp_managed_count={res.get('ensp_managed_count')}")
+
+    blocks = call(srv, "ensp_lab_status", {"lab_root": str(OUT_DIR / "no-such-lab")})
+    res = json.loads(text_of(blocks))
+    check("ensp_lab_status reports a lab that is not there",
+          res.get("ok") is False and res.get("error_code") == "lab_not_found",
+          f"error_code={res.get('error_code')}")
 
     blocks = call(srv, "ensp_capture", {"duration": 3, "backend": "auto"})
     res = json.loads(text_of(blocks))

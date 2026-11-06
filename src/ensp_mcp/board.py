@@ -73,12 +73,36 @@ BOARDS: dict[str, Board] = {
             PortGroup("Ethernet", 8, encap_flag=0, engine_type=3),
         ),
     ),
+    "AR2220": Board(
+        # read off eNSP's own template for an AR2220:
+        #   device_type = 3
+        #   interface[0..2] port_name:GigabitEthernet encap_flag:5 engine_type:1
+        #                 port_type:1 mod_id:1
+        #   interface[3..4] port_name:Serial encap_flag:0 engine_type:0
+        #                 port_type:9 mod_id:3
+        device_type=3,
+        groups=(
+            PortGroup("GE", 3, encap_flag=5, engine_type=1, port_type=1, mod_id=1),
+            PortGroup("Serial", 2, encap_flag=0, engine_type=0, port_type=9, mod_id=3),
+        ),
+    ),
 }
+
+#: the port family the guest is told about.  eNSP writes the expanded name
+#: into ``port_name:`` - the AR2220's file says ``port_name:GigabitEthernet``
+#: even though the model calls the family "GE".
+FAMILIES = {"GE": "GigabitEthernet", "10GE": "TenGigabitEthernet",
+            "Serial": "Serial"}
 
 
 def board_for(model: str) -> Board | None:
     """The board of ``model``, or ``None`` when it is not known."""
     return BOARDS.get(model.strip().upper())
+
+
+def family_name(group: PortGroup) -> str:
+    """The name of the port's family, as the guest is told about it."""
+    return FAMILIES.get(group.name, "Ethernet")
 
 
 def vrp_name(group: PortGroup, member: int, slot: int = 0) -> str:
@@ -98,8 +122,7 @@ def vrp_name(group: PortGroup, member: int, slot: int = 0) -> str:
     So the number in the interface name is *not* the port's index - the
     index only says where the port sits on the board.
     """
-    family = {"GE": "GigabitEthernet", "10GE": "TenGigabitEthernet",
-              "Serial": "Serial"}.get(group.name, "Ethernet")
+    family = family_name(group)
     return f"{family}{slot}/0/{member}"
 
 
@@ -118,13 +141,16 @@ def interface_lines(board: Board, guest_ip: str, host_ip: str,
     lines: list[str] = []
     index = 0
     for group in board.groups:
+        # eNSP writes the expanded family name into ``port_name:`` - the
+        # AR2220's own template says ``port_name:GigabitEthernet``, not "GE"
+        family = family_name(group)
         for member in range(group.count):
             local_port = 10000 + index
             dest_port = host_ports.get(index, 0)
             lines.append(
                 f"interface[{index}] = socket[local:{guest_ip}:{local_port} "
                 f"dest:{host_ip}:{dest_port} role:client protocol:udp]"
-                f"[port_phy card_id:0 panel_port:0 port_name:{group.name} "
+                f"[port_phy card_id:0 panel_port:0 port_name:{family} "
                 f"cpu_port:{index} encap_flag:{group.encap_flag} "
                 f"engine_type:{group.engine_type} port_type:{group.port_type} "
                 f"mod_id:{group.mod_id} port_id:{member} phy_id:1]")

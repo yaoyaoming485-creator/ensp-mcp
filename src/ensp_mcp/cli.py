@@ -91,60 +91,11 @@ def cmd_lab_create(args) -> int:
 def cmd_lab_patch(args) -> int:
     """Rewrite each device's resource.cfg so VRP can bind its sockets."""
     from . import board as boardmod
-    from . import rescfg
     lab = labmod.Lab.load(args.root)
     print("patching resource.cfg ...")
-    total = 0
-    failed: list[str] = []
+    total, failed = lab.patch_devices(with_board=bool(getattr(args, "board", False)))
     for d in lab.devices:
-        vdi = lab.device_disk(d)
-        if vdi is None:
-            print(f"  {d.name}: no disk found, skipped")
-            failed.append(d.name)
-            continue
-        ports = lab.interface_ports(d)
-        # The board is the part that tells the guest which ports it has.  It
-        # is only written when it is asked for: without it the guest keeps
-        # the board the image shipped with (the AR201's nine ports), which is
-        # what a lab that only needs the interfaces to come up can live with.
-        brd = boardmod.board_for(d.model) if getattr(args, "board", False) else None
-        if brd is None and not getattr(args, "board", False):
-            # A lab that was patched with a board keeps it.  "lab up" calls
-            # this without a board to move the addresses, and that rewrites
-            # the image from the pristine base - which would drop the board
-            # again and put the guest back on the image's own ports.
-            if lab.marker_board_state(d) is not None:
-                brd = boardmod.board_for(d.model)
-        if getattr(args, "board", False) and brd is None:
-            print(f"  {d.name}: no board known for {d.model}, keeping the image's")
-        # The device type is the one number that really decides the board:
-        # the guest's VRP rewrites the interface list itself, from the board
-        # its device type selects (the board descriptions live in the guest).
-        devtype = getattr(args, "device_type", None)
-        if not lab.needs_patch(d, vdi, dest_port=True, port_map=ports,
-                               board=brd, device_type=devtype):
-            print(f"  {d.name}: already patched -> local {d.ip}, "
-                  f"dest {lab.guest_host_ip} ({vdi.name})")
-            continue
-        try:
-            n, new_disk = rescfg.rewrite_vdi(vdi, d.ip, lab.guest_host_ip,
-                                              vm_name=d.vm,
-                                              media_port=d.media_port,
-                                              port_map=ports,
-                                              board=brd,
-                                              device_type=devtype)
-        except rescfg.ResourceCfgError as exc:
-            print(f"  {d.name}: FAILED {exc}")
-            failed.append(d.name)
-            continue
-        total += n
-        lab.mark_patched(d, new_disk, dest_port=True, port_map=ports, board=brd,
-                         device_type=devtype)
-        extra = ""
-        if brd is not None:
-            extra = f", board {d.model} ({brd.port_count} ports, device_type {brd.device_type})"
-        print(f"  {d.name}: {n} socket line(s) -> local {d.ip}, "
-              f"dest {lab.guest_host_ip}{extra}")
+        print(f"  {d.name}: local {d.ip}, dest {lab.guest_host_ip}")
     print(f"patched {total} socket line(s)")
     if failed:
         # A guest whose resource.cfg still points at the old addresses cannot
@@ -157,6 +108,16 @@ def cmd_lab_patch(args) -> int:
 
 
 def cmd_lab_up(args) -> int:
+    if args.topo and not (Path(args.root) / "lab.json").is_file():
+        # one command to start a whole topology: the lab is made from the
+        # file, with the topology's own device names, ssids and links
+        print(f"creating a lab from {args.topo} ...")
+        cmd_lab_create(argparse.Namespace(
+            name=Path(args.root).name or "lab", root=args.root,
+            topo=args.topo, subnet=labmod.DEFAULT_SUBNET,
+            host_ip=labmod.DEFAULT_HOST_IP, start_ip=labmod.DEFAULT_BASE_IP,
+            media_port=labmod.DEFAULT_MEDIA_PORT, nic="hostonly",
+            with_vms=True))
     lab = labmod.Lab.load(args.root)
 
     from . import supervise
@@ -164,7 +125,7 @@ def cmd_lab_up(args) -> int:
         if args.with_vms:
             lab.create_vms()
         if args.patch:
-            cmd_lab_patch(argparse.Namespace(root=args.root))
+            cmd_lab_patch(argparse.Namespace(root=args.root, board=True))
         return supervise.run_foreground(Path(args.root), verbose=not args.quiet)
 
     # The guests power themselves off when the control socket closes, so the
@@ -185,7 +146,7 @@ def cmd_lab_up(args) -> int:
                for d in lab.devices):
             print("stopping the machines so their images can be rewritten ...")
             lab.stop_vms()
-        rc = cmd_lab_patch(argparse.Namespace(root=args.root))
+        rc = cmd_lab_patch(argparse.Namespace(root=args.root, board=True))
         if rc != 0:
             print("aborting: the guest images could not be patched", file=sys.stderr)
             return rc
@@ -506,6 +467,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     lu = l.add_parser("up", help="start the lab")
     lu.add_argument("--root", required=True)
+    lu.add_argument("--topo", default="",
+                    help="topology to make the lab from, when the lab does "
+                         "not exist yet: one command starts a whole topology")
     lu.add_argument("--with-vms", action="store_true", default=True)
     lu.add_argument("--foreground", action="store_true",
                     help="run the drivers in this terminal instead of a supervisor")

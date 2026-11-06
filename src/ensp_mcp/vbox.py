@@ -29,6 +29,11 @@ from pathlib import Path
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
+#: VirtualBox writes its output in the console's code page, not in UTF-8.
+#: On a Chinese Windows that is GBK, and a UTF-8 decode turns a path with
+#: Chinese characters into something that cannot be opened any more.
+OUTPUT_ENCODING = "mbcs" if os.name == "nt" else "utf-8"
+
 # Matched by exact file name. A prefix match would make this server detect
 # itself: it normally runs as ``ensp-mcp.exe``, which starts with "ensp".
 ENSP_PROCESS_NAMES = frozenset(
@@ -57,7 +62,7 @@ def _run(args: list[str], timeout: float = 60.0) -> subprocess.CompletedProcess:
             args,
             capture_output=True,
             text=True,
-            encoding="utf-8",
+            encoding=OUTPUT_ENCODING,
             errors="replace",
             timeout=timeout,
             creationflags=CREATE_NO_WINDOW,
