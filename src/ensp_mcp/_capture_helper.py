@@ -33,13 +33,26 @@ def pktmon_capture(duration, out_path, filters=None):
     out.parent.mkdir(parents=True, exist_ok=True)
     etl = out.with_suffix(".etl")
 
+    warnings = []
     if filters:
-        _run(["pktmon", "filter", "remove"], timeout=30)
+        # a filter that cannot be installed must not cost the capture
+        try:
+            _run(["pktmon", "filter", "remove"], timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append("could not clear the pktmon filters: %s" % exc)
         for expr in filters:
             res = _run(["pktmon", "filter", "add"] + expr.split(), timeout=30)
             if res.returncode != 0:
-                raise RuntimeError("pktmon rejected filter %r: %s"
-                                   % (expr, (res.stderr or res.stdout).strip()))
+                # this host refuses filter changes; the capture runs without it
+                warnings.append("pktmon refused the filter %r (%s); the capture "
+                               "runs without it"
+                               % (expr, (res.stderr or res.stdout).strip()))
+                break
+    try:
+        out.with_suffix(".warnings.txt").write_text(
+            "\n".join(warnings), encoding="utf-8")
+    except OSError:
+        pass
 
     start = _run(["pktmon", "start", "--capture", "--pkt-size", "0",
                   "--comp", "nics", "--file-name", str(etl)], timeout=60)

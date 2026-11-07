@@ -399,7 +399,8 @@ def pktmon_available() -> bool:
 
 def pktmon_capture(duration: float, out_path: str | Path,
                    filters: list[str] | None = None,
-                   work_dir: str | Path | None = None) -> Path:
+                   work_dir: str | Path | None = None
+                   ) -> tuple[Path, list[str]]:
     """Take a capture with pktmon and return the pcapng file it produced.
 
     ``filters`` are pktmon filter expressions, e.g. ``["-p 40000"]`` or
@@ -412,14 +413,22 @@ def pktmon_capture(duration: float, out_path: str | Path,
     work.mkdir(parents=True, exist_ok=True)
     etl = work / (out.stem + ".etl")
 
+    warnings: list[str] = []
     if filters:
-        _run(["pktmon", "filter", "remove"], timeout=30)
+        # A filter that cannot be installed must not cost the capture: an
+        # unfiltered capture says more than no capture at all.
+        try:
+            _run(["pktmon", "filter", "remove"], timeout=30)
+        except Exception as exc:  # noqa: BLE001
+            warnings.append(f"could not clear the pktmon filters: {exc}")
         for expr in filters:
             res = _run(["pktmon", "filter", "add"] + expr.split(), timeout=30)
             if res.returncode != 0:
-                raise CaptureError(
-                    f"pktmon rejected the filter {expr!r}: "
-                    f"{(res.stderr or res.stdout).strip()}")
+                detail = (res.stderr or res.stdout).strip()
+                warnings.append(
+                    f"pktmon refused the filter {expr!r} ({detail}); the "
+                    "capture runs without it")
+                break
 
     start = _run(["pktmon", "start", "--capture", "--pkt-size", "0",
                   "--comp", "nics", "--file-name", str(etl)], timeout=60)
@@ -442,7 +451,7 @@ def pktmon_capture(duration: float, out_path: str | Path,
     if conv.returncode != 0 or not out.is_file():
         raise CaptureError(
             "pktmon etl2pcap failed: " + (conv.stderr or conv.stdout).strip())
-    return out
+    return out, warnings
 
 
 def _raw_capture(duration: float, out_path: str | Path,
@@ -531,7 +540,8 @@ _HELPER = Path(__file__).with_name("_capture_helper.py")
 
 
 def elevated_capture(duration: float, out_path: str | Path,
-                     filters: list[str] | None = None) -> Path:
+                     filters: list[str] | None = None
+                     ) -> tuple[Path, list[str]]:
     """Take the capture in a freshly elevated helper process.
 
     The MCP server usually runs unelevated, and pktmon needs an elevated
@@ -564,13 +574,19 @@ def elevated_capture(duration: float, out_path: str | Path,
     end = time.time() + duration + 60
     error_file = out.with_suffix(".error.txt")
     started_file = out.with_suffix(".started.txt")
+    warning_file = out.with_suffix(".warnings.txt")
     while time.time() < end:
         if error_file.is_file():
             detail = error_file.read_text(encoding="utf-8", errors="replace").strip()
             error_file.unlink(missing_ok=True)
             raise CaptureError(f"the elevated capture failed: {detail}")
         if out.is_file() and out.stat().st_size > 0:
-            return out
+            notes = []
+            if warning_file.is_file():
+                notes = [ln for ln in warning_file.read_text(
+                    encoding="utf-8", errors="replace").splitlines() if ln.strip()]
+                warning_file.unlink(missing_ok=True)
+            return out, notes
         time.sleep(0.5)
     if started_file.is_file():
         marker = started_file.read_text(encoding="utf-8", errors="replace").strip()
@@ -594,18 +610,21 @@ def capture(duration: float = 10.0, out_path: str | Path = "",
     out = Path(out_path) if out_path else Path.cwd() / "ensp-capture.pcapng"
     order = ["pktmon", "raw"] if backend == "auto" else [backend]
     attempts: list[dict] = []
+    warnings: list[str] = []
     for name in order:
         try:
             if name == "pktmon":
                 if not is_elevated():
                     if elevate:
-                        path = elevated_capture(duration, out, filters)
+                        path, notes = elevated_capture(duration, out, filters)
+                        warnings.extend(notes)
                     else:
                         raise CaptureError(
                             "pktmon needs an elevated process; this server is "
                             "not elevated")
                 else:
-                    path = pktmon_capture(duration, out, filters)
+                    path, notes = pktmon_capture(duration, out, filters)
+                    warnings.extend(notes)
             elif name == "raw":
                 if not is_elevated() and not elevate:
                     raise CaptureError(
@@ -620,6 +639,7 @@ def capture(duration: float = 10.0, out_path: str | Path = "",
                 break
             continue
         attempts.append({"backend": name, "ok": True, "file": str(path)})
-        return {"ok": True, "backend": name, "file": str(path), "attempts": attempts}
+        return {"ok": True, "backend": name, "file": str(path),
+                "attempts": attempts, "warnings": warnings}
     return {"ok": False, "attempts": attempts,
             "error": "; ".join(a["error"] for a in attempts)}
