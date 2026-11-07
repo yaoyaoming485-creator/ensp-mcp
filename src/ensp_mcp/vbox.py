@@ -208,11 +208,13 @@ def is_ensp_managed(vm: VmInfo) -> bool:
     the device's name, and a device of one of this project's labs always can.
     """
     if vm.cfg_file:
+        # where the machine lives decides it: a lab of this project may use
+        # the client's own machine name, but it is not the client's machine
         try:
             Path(vm.cfg_file).resolve().relative_to(ensp_device_dir().resolve())
             return True
         except (ValueError, OSError):
-            pass
+            return False
     return vm.name.startswith("AR_Clone_")
 
 

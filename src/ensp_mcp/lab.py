@@ -41,6 +41,10 @@ from . import agentd, topo, vbox
 DEFAULT_SUBNET = "192.168.56"
 DEFAULT_HOST_IP = "192.168.56.1"
 DEFAULT_BASE_IP = 101
+
+#: the address the eNSP client gives the first device of a topology; it
+#: counts up from there for the rest of the devices
+ENSP_FIRST_IP = 2
 DEFAULT_MEDIA_PORT = 20002
 
 #: NAT mode.  The guest sits behind VirtualBox's NAT engine, the host reaches
@@ -327,8 +331,19 @@ class Lab:
                host_ip: str = DEFAULT_HOST_IP,
                start_ip: int = DEFAULT_BASE_IP,
                media_port: int = DEFAULT_MEDIA_PORT,
-               nic_mode: str = "hostonly") -> "Lab":
-        """Create a lab from an existing .topo file."""
+               nic_mode: str = "hostonly",
+               like_ensp: bool = False) -> "Lab":
+        """Create a lab from an existing .topo file.
+
+        With `like_ensp` the lab's devices are the devices the eNSP client
+        would have made for that topology: the first address is .2 (the
+        client hands the first device of a topology .2 and counts up), the
+        machine is called `AR_Clone_<ssid>` and the serial pipe is the
+        client's own `\\\\.\\pipe\\<ssid>`.  Only the host side differs -
+        the supervisor instead of eNSP_VBoxServer - so the device answers on
+        the address the rest of the lab already expects, and the console is
+        free for this server to use.
+        """
         root = Path(root)
         if (root / "lab.json").exists():
             raise LabError(f"{root} already contains a lab")
@@ -357,18 +372,24 @@ class Lab:
                 "a_guest_port": link.get("a_guest_port"),
                 "b_guest_port": link.get("b_guest_port"),
             })
+        if like_ensp and start_ip == DEFAULT_BASE_IP:
+            start_ip = ENSP_FIRST_IP
         for i, dev in enumerate(parsed.get("devices", [])):
             vm = f"{name}-{dev['name']}"
             # the ssid is 37 bytes: the 36-character UUID plus a NUL
             uuid = (dev.get("id") or "").strip().upper()
             if len(uuid) != 36:
                 uuid = uuid.ljust(36, "0")[:36]
+            if like_ensp:
+                vm = f"AR_Clone_{uuid}"
+            pipe = (f"\\\\.\\pipe\\{uuid}" if like_ensp
+                    else f"\\\\.\\pipe\\{DEFAULT_PIPE_PREFIX}-{name}-{dev['name']}")
             lab.devices.append(LabDevice(
                 name=dev["name"],
                 model=dev.get("model", "AR2220"),
                 vm=vm,
                 ip=f"{subnet}.{start_ip + i}",
-                pipe=f"\\\\.\\pipe\\{DEFAULT_PIPE_PREFIX}-{name}-{dev['name']}",
+                pipe=pipe,
                 media_port=media_port + i,
                 device_id=uuid + "\x00",
                 com_port=dev.get("com_port", 0),
@@ -615,6 +636,59 @@ class Lab:
                     names.append(boardmod.vrp_name(group, member))
                 index += 1
         return names
+
+    def busy_ports(self) -> list[int]:
+        """The host ports this lab needs that **another** lab already holds.
+
+        The interface sockets live on fixed host ports, so two labs that run
+        at the same time fight over them: the second supervisor cannot bind
+        them, the relay never comes up, and the devices look alive but
+        nothing passes between them.  That failure is silent from the
+        devices' side, so it is worth reporting.
+
+        The owner of a port is looked up rather than guessed by binding it:
+        a socket that is already bound to the lab's own address can still be
+        bound to 0.0.0.0, so a bind test says nothing.
+        """
+        owners = self._port_owners()
+        if not owners:
+            return []
+        mine = {str(pid) for pid in self.supervisor_state().get("pids", [])}
+        busy: list[int] = []
+        for dev in self.devices:
+            for port in self.interface_ports(dev).values():
+                pids = owners.get(port, set())
+                if pids and not (pids & mine):
+                    busy.append(port)
+        return sorted(set(busy))
+
+    @staticmethod
+    def _port_owners() -> dict[int, set[str]]:
+        """Which process holds each UDP port, as ``{port: {pid, ...}}``."""
+        import subprocess
+
+        try:
+            res = subprocess.run(
+                ["netstat", "-ano", "-p", "UDP"], capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30)
+        except Exception:  # noqa: BLE001
+            return {}
+        owners: dict[int, set[str]] = {}
+        for line in res.stdout.splitlines():
+            parts = line.split()
+            # "UDP <local> <foreign> <pid>" - the state column is only there
+            # for some rows, so the pid is the last field
+            if len(parts) < 4 or not parts[0].upper().startswith("UDP"):
+                continue
+            local = parts[1]
+            if ":" not in local:
+                continue
+            try:
+                port = int(local.rsplit(":", 1)[1])
+            except ValueError:
+                continue
+            owners.setdefault(port, set()).add(parts[-1])
+        return owners
 
     def patch_devices(self, with_board: bool = False) -> tuple[int, list[str]]:
         """Rewrite each device's ``resource.cfg`` so VRP can bind its sockets.

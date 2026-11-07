@@ -549,7 +549,7 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
                        wait: float = 0.0,
                        protected: list[str] = DEFAULT_PROTECTED,
                        override_protected: bool = False,
-                       topo_path: str = "") -> str:
+                       topo_path: str = "", like_ensp: bool = False) -> str:
     """Start device virtual machines.
 
     Two ways to do it, and they are not the same thing:
@@ -579,6 +579,11 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
         topo_path: the topology the devices come from.  With ``lab_root`` it
             is the lab that is created; without it, it lets the call tell
             "this is an eNSP device" from "this name is a typo".
+        like_ensp: give the devices the identity the eNSP client would - the
+            first address is .2, the machine is called ``AR_Clone_<ssid>`` and
+            the serial pipe is the client's own.  The devices are then the
+            ones the rest of the lab already expects, and the eNSP client is
+            not needed at all.
     """
     if not devices and not lab_root:
         return _fail("no_devices_given", "neither devices nor lab_root was given",
@@ -593,7 +598,8 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
             # the topology is the source of the devices: its names, its ssids
             # and its links all come from the file
             try:
-                created = labmod.Lab.create(root.name or "lab", root, topo_path)
+                created = labmod.Lab.create(root.name or "lab", root, topo_path,
+                                            like_ensp=like_ensp)
             except Exception as exc:  # noqa: BLE001
                 return _fail("lab_create_failed", f"{type(exc).__name__}: {exc}",
                              hint="The topology could not be turned into a lab; "
@@ -605,6 +611,17 @@ def ensp_start_devices(devices: list[str] = [], lab_root: str = "",
                          hint="The directory has to be a lab this project created.")
         problems = []
         patched = None
+        busy = lab.busy_ports()
+        if busy:
+            return _fail(
+                "lab_ports_in_use",
+                "the host ports this lab needs are already held: "
+                + ", ".join(str(p) for p in sorted(busy)[:12]),
+                hint="Two labs cannot run at the same time - the interface "
+                     "sockets live on fixed host ports. Stop the other lab "
+                     "(enspctl lab down --root <other>) and start this one again.",
+                action={"kind": "stop_other_lab"},
+                lab=lab.name, root=str(lab.root))
         if _lab_needs_preparation(lab):
             # cloning a machine and rewriting its image takes minutes, and a
             # tool call may not block for that long: the work runs in the

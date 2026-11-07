@@ -221,7 +221,7 @@ TOOLS: tuple[ToolSpec, ...] = (
         error_codes=("vbox_not_found", "device_not_found",
                      "device_needs_ensp_client", "vm_protected",
                      "device_start_failed", "lab_create_failed",
-                     "lab_not_found"),
+                     "lab_not_found", "lab_ports_in_use"),
         notes=("With lab_root the project's own lab supervisor is started "
                "instead, which is what brings a device up with a working "
                "console and an address. With topo_path as well, a lab is "

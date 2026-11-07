@@ -78,7 +78,8 @@ def cmd_lab_create(args) -> int:
     lab = labmod.Lab.create(args.name, args.root, args.topo,
                             subnet=args.subnet, host_ip=args.host_ip,
                             start_ip=args.start_ip, media_port=args.media_port,
-                            nic_mode=args.nic)
+                            nic_mode=args.nic,
+                            like_ensp=getattr(args, "like_ensp", False))
     print(f"lab {lab.name!r} created in {lab.root}")
     for d in lab.devices:
         print(f"  {d.name:<10} model={d.model:<10} vm={d.vm:<24} ip={d.ip:<16} pipe={d.pipe}")
@@ -117,6 +118,7 @@ def cmd_lab_up(args) -> int:
             topo=args.topo, subnet=labmod.DEFAULT_SUBNET,
             host_ip=labmod.DEFAULT_HOST_IP, start_ip=labmod.DEFAULT_BASE_IP,
             media_port=labmod.DEFAULT_MEDIA_PORT, nic="hostonly",
+            like_ensp=getattr(args, "like_ensp", False),
             with_vms=True))
     lab = labmod.Lab.load(args.root)
 
@@ -458,6 +460,8 @@ def build_parser() -> argparse.ArgumentParser:
     lc.add_argument("--host-ip", default=labmod.DEFAULT_HOST_IP)
     lc.add_argument("--start-ip", type=int, default=labmod.DEFAULT_BASE_IP)
     lc.add_argument("--media-port", type=int, default=labmod.DEFAULT_MEDIA_PORT)
+    lc.add_argument("--like-ensp", action="store_true",
+                    help="give the devices the identity the eNSP client would")
     lc.add_argument("--nic", choices=["hostonly", "nat"], default="hostonly",
                     help="how the guests are attached to the host: a host-only "
                          "NIC (default) or VirtualBox's NAT")
@@ -470,6 +474,12 @@ def build_parser() -> argparse.ArgumentParser:
     lu.add_argument("--topo", default="",
                     help="topology to make the lab from, when the lab does "
                          "not exist yet: one command starts a whole topology")
+    lu.add_argument("--like-ensp", action="store_true",
+                    help="give the devices the identity the eNSP client would: "
+                         "the first address is .2, the machine is called "
+                         "AR_Clone_<ssid> and the serial pipe is the client's "
+                         "own - so the lab answers on the addresses the rest of "
+                         "the lab already expects")
     lu.add_argument("--with-vms", action="store_true", default=True)
     lu.add_argument("--foreground", action="store_true",
                     help="run the drivers in this terminal instead of a supervisor")
