@@ -456,6 +456,61 @@ def _spawn_lab_job(lab_root: str, topo_path: str = "") -> int:
     return proc.pid
 
 
+@mcp.tool(meta=registry.meta_for("ensp_prepare_lab"))
+def ensp_prepare_lab(lab_root: str) -> str:
+    """Quiet a lab: shut down the ports that no link uses.
+
+    A port with no peer keeps its link trying to come up, and the device
+    announces it on the console over and over.  That noise lands in the
+    middle of the command that is being typed, and the router then reads
+    half of it and answers *"Unrecognized command found at '^' position"* -
+    which looks like the MCP mistyped the command.
+
+    This shuts those ports down, and reports what it did per device.
+
+    Args:
+        lab_root: a lab directory of this project.
+    """
+    from . import lab as labmod
+    try:
+        lab = labmod.Lab.load(lab_root)
+    except Exception as exc:  # noqa: BLE001
+        return _fail("lab_not_found", f"{type(exc).__name__}: {exc}",
+                     hint="The directory has to be a lab this project created.")
+    rows = []
+    for dev in lab.devices:
+        unused = lab.unused_port_names(dev)
+        if not unused:
+            rows.append({"device": dev.name, "ip": dev.ip, "shut": [],
+                         "note": "every port carries a link"})
+            continue
+        commands = ["system-view"]
+        for name in unused:
+            commands += [f"interface {name}", "shutdown", "quit"]
+        commands += ["display interface brief", "return"]
+        try:
+            with agentd.VrpConsole(dev.ip, wake=False) as con:
+                # no echo verification: a console that is announcing a flapping
+                # port splits the command, and the check would fail on a
+                # command that did run
+                out = con.run(commands, wait=1.0, until_prompt=False,
+                              verify=False)
+            still_up = [ln.strip() for ln in out.splitlines()
+                        if " has turned into UP state" in ln]
+            rows.append({"device": dev.name, "ip": dev.ip, "shut": unused,
+                         "note": ("the console is still announcing a port"
+                                  if still_up else None)})
+        except Exception as exc:  # noqa: BLE001
+            rows.append({"device": dev.name, "ip": dev.ip, "shut": [],
+                         "error": f"{type(exc).__name__}: {exc}"})
+    return json.dumps({
+        "ok": all("error" not in r for r in rows),
+        "lab": lab.name,
+        "root": str(lab.root),
+        "devices": rows,
+    }, ensure_ascii=False, indent=2)
+
+
 @mcp.tool(meta=registry.meta_for("ensp_lab_status"))
 def ensp_lab_status(lab_root: str) -> str:
     """The state of a lab: the supervisor, and every device in it.
@@ -815,6 +870,8 @@ def ensp_capture(duration: float = 10.0, out_path: str = "", backend: str = "aut
         "duration": duration,
         "attempts": res.get("attempts", []),
     }
+    if res.get("warnings"):
+        out["warnings"] = res["warnings"]
     if analyze:
         try:
             summary = capture.summarize(res["file"])

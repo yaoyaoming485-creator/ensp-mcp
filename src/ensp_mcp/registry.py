@@ -246,6 +246,16 @@ TOOLS: tuple[ToolSpec, ...] = (
                "the eNSP client and answers device_needs_ensp_client."),
     ),
     ToolSpec(
+        name="ensp_prepare_lab",
+        category="lifecycle",
+        summary="Shut down the ports of a lab that no link uses.",
+        returns="JSON with the ports that were shut, per device.",
+        error_codes=("lab_not_found",),
+        notes=("A port with no peer keeps announcing itself on the console, "
+               "and that noise splits the commands that are being typed - the "
+               "router then reads half of one and rejects it."),
+    ),
+    ToolSpec(
         name="ensp_lab_status",
         category="lifecycle",
         summary="The state of a lab: the supervisor and every device in it.",

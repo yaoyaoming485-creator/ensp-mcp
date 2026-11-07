@@ -342,7 +342,7 @@ class VrpConsole:
 
     def __init__(self, guest_ip: str, port: int = VRP_CONSOLE_PORT,
                  timeout: float = 5.0, connect_retries: int = 4,
-                 retry_delay: float = 1.5):
+                 retry_delay: float = 1.5, wake: bool = True):
         self.guest_ip, self.port = split_endpoint(guest_ip, port)
         self.timeout = timeout
         self.connect_retries = connect_retries
@@ -350,6 +350,10 @@ class VrpConsole:
         self.sock: socket.socket | None = None
         self.banner = ""
         self._ready = False
+        #: wait out the boot banner before the first command.  A console that
+        #: is busy announcing a flapping port never shows a prompt, and the
+        #: wait would run out its whole budget every time.
+        self.wake_on_connect = wake
 
     def connect(self) -> "VrpConsole":
         """Open the console, retrying while the previous session is released.
@@ -375,7 +379,9 @@ class VrpConsole:
             self._ready = False
             time.sleep(0.3)
             # get past the "press any key" banner and wait for a real prompt
-            self.banner = self.wake()
+            self.banner = self.wake() if self.wake_on_connect else ""
+            if not self.wake_on_connect:
+                self._ready = True
             return self
         raise VrpConsoleError(
             f"cannot reach VRP console at {self.guest_ip}:{self.port} "
@@ -486,7 +492,8 @@ class VrpConsole:
             return self._drain_until_prompt(max(wait, self.min_prompt_wait))
         return self._drain(wait)
 
-    def exec_one(self, cmd: str, wait: float = 1.5, until_prompt: bool = True) -> str:
+    def exec_one(self, cmd: str, wait: float = 1.5, until_prompt: bool = True,
+                 verify: bool = True) -> str:
         """Run one command, prove that it ran, and return its output.
 
         VRP echoes every command it receives, so the echo is used as proof
@@ -498,7 +505,7 @@ class VrpConsole:
         self.ensure_ready()
         text = cmd.rstrip("\r\n")
         out = self._execute(cmd, wait, until_prompt)
-        if not _echo_seen(text, out):
+        if verify and not _echo_seen(text, out):
             if _PRESS_ANY_KEY in out.lower() or _bare_prompt(out):
                 # The command never reached the CLI - it was eaten by the
                 # "press any key" banner, or the session is not accepting
@@ -516,7 +523,7 @@ class VrpConsole:
         return out
 
     def run(self, commands: list[str], wait: float = 1.5,
-            until_prompt: bool = True) -> str:
+            until_prompt: bool = True, verify: bool = True) -> str:
         """Run several commands on one session and return everything.
 
         Each command is followed by a read that waits for the VRP prompt (or
@@ -525,7 +532,8 @@ class VrpConsole:
         chunks = []
         for cmd in commands:
             chunks.append(f"=== {cmd}\n")
-            chunks.append(self.exec_one(cmd, wait=wait, until_prompt=until_prompt))
+            chunks.append(self.exec_one(cmd, wait=wait, until_prompt=until_prompt,
+                                        verify=verify))
         return "".join(chunks)
 
 

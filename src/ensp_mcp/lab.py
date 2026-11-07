@@ -583,6 +583,39 @@ class Lab:
         return None
 
     # ------------------------------------------------------------- patch --
+    def wired_ports(self, dev: LabDevice) -> set[int]:
+        """The port indices of `dev` that a link uses."""
+        used: set[int] = set()
+        for link in self.links:
+            if link.get("a") == dev.name and link.get("a_port") is not None:
+                used.add(int(link["a_port"]))
+            if link.get("b") == dev.name and link.get("b_port") is not None:
+                used.add(int(link["b_port"]))
+        return used
+
+    def unused_port_names(self, dev: LabDevice) -> list[str]:
+        """The ports of `dev` that no link uses, by the name the VRP gives them.
+
+        A port that has no peer keeps its link trying to come up, and the
+        device says so on the console over and over.  That noise lands in the
+        middle of a command that is being typed, and the router then reads
+        half of it and rejects it - so the port has to be shut down.
+        """
+        from . import board as boardmod
+
+        brd = boardmod.board_for(dev.model)
+        if brd is None:
+            return []
+        used = self.wired_ports(dev)
+        names: list[str] = []
+        index = 0
+        for group in brd.groups:
+            for member in range(group.count):
+                if index not in used:
+                    names.append(boardmod.vrp_name(group, member))
+                index += 1
+        return names
+
     def patch_devices(self, with_board: bool = False) -> tuple[int, list[str]]:
         """Rewrite each device's ``resource.cfg`` so VRP can bind its sockets.
 

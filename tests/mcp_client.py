@@ -162,6 +162,7 @@ try:
         "ensp_start_devices",
         "ensp_stop_devices",
         "ensp_lab_status",
+        "ensp_prepare_lab",
         "ensp_capture",
         "ensp_tool_registry",
     }
