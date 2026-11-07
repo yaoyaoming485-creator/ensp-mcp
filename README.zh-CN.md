@@ -518,6 +518,27 @@ enspctl lab up --root D:\work\lab13 --topo D:\work\lab13.topo
 设备名保持拓扑里的名字（这里也是 `AR1`）；而且因为 eNSP 客户端不参与，控制台
 是自由的，本服务端能真的驱动它们。
 
+### 没连线的口必须关掉
+
+没有对端的口会一直尝试把链路拉起来，设备就在控制台上反复播报：
+
+```
+Nov  7 2026 17:30:09 Huawei %%01IFPDT/4/IF_STATE(l)[44]:Interface GigabitEthernet0/0/2 has turned into UP state.
+Nov  7 2026 17:30:09 Huawei %%01IFPDT/4/IF_STATE(l)[45]:Interface GigabitEthernet0/0/2 has turned into DOWN state.
+```
+
+这些噪声会插进正在敲的命令中间，路由器只读到半句，就回
+「Unrecognized command found at '^' position」——看起来像是调用方把命令敲错了。
+把没用的口 `shutdown` 掉就干净了；`ensp_prepare_lab` 会给 lab 里的每台设备都做
+一遍，并回报关掉了哪些口。
+
+```jsonc
+// ensp_prepare_lab(lab_root="D:\\work\\lab13-cmd")
+{ "ok": true,
+  "devices": [ { "device": "AR1", "ip": "192.168.56.101",
+                 "shut": ["GigabitEthernet0/0/1", "GigabitEthernet0/0/2"] } ] }
+```
+
 板型也会写进去：guest 的 `resource.cfg` 会被改成该型号的端口与 `device_type`，
 所以 AR2220 起出来是它的三个 GE 口（`GigabitEthernet0/0/0`…），而不是镜像自带的
 AR201 那九个口。这些数字是**实测**来的，不是猜的——eNSP 会给每台设备写一份模板到

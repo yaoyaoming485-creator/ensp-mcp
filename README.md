@@ -563,6 +563,29 @@ The devices keep the names the topology gives them, so `AR1` is `AR1` here
 too — and because the eNSP client is not involved, their consoles are free
 and this server can drive them.
 
+### The ports that carry no link have to be shut down
+
+A port with no peer keeps its link trying to come up, and the device
+announces it on the console:
+
+```
+Nov  7 2026 17:30:09 Huawei %%01IFPDT/4/IF_STATE(l)[44]:Interface GigabitEthernet0/0/2 has turned into UP state.
+Nov  7 2026 17:30:09 Huawei %%01IFPDT/4/IF_STATE(l)[45]:Interface GigabitEthernet0/0/2 has turned into DOWN state.
+```
+
+That noise lands in the middle of the command that is being typed, and the
+router then reads half of it and answers *"Unrecognized command found at '^'
+position"* — which looks like the caller mistyped the command. `shutdown` on
+the unused ports ends it; `ensp_prepare_lab` does it for every device of a
+lab and reports which ports it shut.
+
+```jsonc
+// ensp_prepare_lab(lab_root="D:\\work\\lab13-cmd")
+{ "ok": true,
+  "devices": [ { "device": "AR1", "ip": "192.168.56.101",
+                 "shut": ["GigabitEthernet0/0/1", "GigabitEthernet0/0/2"] } ] }
+```
+
 The board is written as well: the guest's `resource.cfg` gets the model's
 ports and its `device_type`, so an AR2220 presents its three GE ports
 (`GigabitEthernet0/0/0`…) instead of the AR201's nine that the image
