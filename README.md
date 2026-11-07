@@ -559,6 +559,35 @@ enspctl lab up --root D:\work\lab13 --topo D:\work\lab13.topo
                  "state": "running", "agentd": true, "vrp": true } ] }
 ```
 
+### The devices the eNSP client would have made
+
+`--like-ensp` gives the lab's devices the identity the eNSP client gives
+them: the first address is `.2` and counts up, the machine is called
+`AR_Clone_<ssid>` and the serial pipe is the client's own
+`\\.\pipe\<ssid>`. Only the host side differs — this project's supervisor
+instead of `eNSP_VBoxServer` — so the devices answer on the addresses the
+rest of the lab already expects, and their consoles are free.
+
+```sh
+enspctl lab up --root D:\work\lab13 --topo D:\work\lab13.topo --like-ensp
+```
+
+```
+device  vm                                     ip              state    agentd  vrp
+AR1     AR_Clone_55F15F0C-1E04-41C3-85E6-…    192.168.56.2   running  yes     yes
+AR2     AR_Clone_1C27E9CD-091D-40EC-9E23-…    192.168.56.3   running  yes     yes
+AR3     AR_Clone_07DC455E-1E3D-46BB-88B4-…    192.168.56.4   running  yes     yes
+AR4     AR_Clone_323243D0-E2F2-4FDE-A6F7-…    192.168.56.5   running  yes     yes
+```
+
+The eNSP client's own devices cannot be started this way, and that is not a
+shortcoming of this project: the client is the only thing that can put a
+device into `eNSP_VBoxServer`'s device table, and the command channel
+answers `device id not in the table` (status 45) for anything else. What
+this lab does is make the *same* device without the client — same name,
+same ssid, same address, same board, same links — and then leave its
+console free.
+
 The devices keep the names the topology gives them, so `AR1` is `AR1` here
 too — and because the eNSP client is not involved, their consoles are free
 and this server can drive them.

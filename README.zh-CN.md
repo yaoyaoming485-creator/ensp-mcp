@@ -515,6 +515,30 @@ enspctl lab up --root D:\work\lab13 --topo D:\work\lab13.topo
                  "state": "running", "agentd": true, "vrp": true } ] }
 ```
 
+### 造出 eNSP 客户端会造的那台设备
+
+`--like-ensp` 让 lab 的设备拿到 eNSP 客户端给它们的身份：第一台设备是 `.2` 往后
+顺延，机器名是 `AR_Clone_<ssid>`，串口管道是客户端自己的 `\\.\pipe\<ssid>`。
+**只有 host 侧不同**——用本项目的 supervisor 代替 `eNSP_VBoxServer`——于是设备会在
+lab 其余部分本来就预期的地址上应答，而它们的控制台是自由的。
+
+```sh
+enspctl lab up --root D:\work\lab13 --topo D:\work\lab13.topo --like-ensp
+```
+
+```
+device  vm                                     ip              state    agentd  vrp
+AR1     AR_Clone_55F15F0C-1E04-41C3-85E6-…    192.168.56.2   running  yes     yes
+AR2     AR_Clone_1C27E9CD-091D-40EC-9E23-…    192.168.56.3   running  yes     yes
+AR3     AR_Clone_07DC455E-1E3D-46BB-88B4-…    192.168.56.4   running  yes     yes
+AR4     AR_Clone_323243D0-E2F2-4FDE-A6F7-…    192.168.56.5   running  yes     yes
+```
+
+**eNSP 客户端自己的设备没法这样启动，这不是本项目的短板**：只有客户端能把设备放进
+`eNSP_VBoxServer` 的设备表，命令通道对其余一律回 `device id not in the table`
+（status 45）。本项目做的是**不用客户端造出同一台设备**——同名、同 ssid、同地址、
+同板型、同连线——然后把它的控制台留给自己用。
+
 设备名保持拓扑里的名字（这里也是 `AR1`）；而且因为 eNSP 客户端不参与，控制台
 是自由的，本服务端能真的驱动它们。
 
