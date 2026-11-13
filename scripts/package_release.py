@@ -17,9 +17,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 def tracked_files() -> list[str]:
-    out = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True,
+    # -z: NUL separated, so that paths with non-ASCII characters are not
+    # quoted the way git quotes them in its default output
+    out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True,
                          text=True, check=True).stdout
-    return [line for line in out.splitlines() if line.strip()]
+    return [line for line in out.split("\0") if line.strip()]
 
 
 def main() -> int:
