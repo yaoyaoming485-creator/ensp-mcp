@@ -611,6 +611,49 @@ guest and the GUI. A lab that drives the guests without the GUI has to
 answer those four bytes itself — and the exact layout the client uses is
 still unknown.
 
+What the four bytes *are* is known now, though: the guest's VPORT process
+sends `htonl(1)` every 10 ms per interface and validates the answer in
+`0x0804bbb0`: four bytes whose big-endian value is 1, 2 or 3 — anything else,
+including a peer address, returns -1 and is dropped. The host answers `2`,
+which also resets the per-port counter at `0x080844a0 + 4*port` that keeps the
+port in control state (while it is above 4, every datagram longer than four
+bytes is dropped). The guest answers a `1` with a `2` of its own, so the
+exchange is `1` ⇄ `2` in both directions.
+
+### ③l The relay's transport, read off the wire
+
+The host's capture shows the relay's own transport: every guest frame
+travels inside a UDP datagram from the guest's VPORT socket (`10000 + N`) to
+the relay's socket for that interface (`30000 + device*16 + N`), and the relay
+hands it to the peer device's VPORT socket with the *receiving* socket as the
+source. A four-byte payload is the VPORT handshake (`1` out, `2` back); a
+longer payload is a real ethernet frame, and unwrapping it gives the guests'
+inner IP headers. That is how the IPsec experiment was able to see the IKE
+exchange hop by hop: `site1 → internet → site2`, with the SA_INIT fully
+decoded (exchange 2, proposal AES-128 / SHA1 / PSK / MODP-768) — and the
+peer's answer never came.
+
+### ③m Where the AR2220's IKE responder does not answer
+
+With the AR2200 V200R003 firmware, the IKE_SA_INIT arrives at the peer (the
+capture shows it on the peer's VPORT socket, with the peer's own public
+address as the destination), the two ends' configurations are byte-for-byte
+symmetric — same pre-shared key cipher text, same proposals, same peer
+name, `local-address` and `remote-address` both set — and the peer still
+sends nothing back: `display ike sa` stays empty on the responder and
+`display ipsec sa` reports no security association.
+
+Two version-specific findings from that hunt, both worth keeping:
+
+* the IKE peer must be **unbound from the interface and the policy deleted**
+  before it can be changed — otherwise the device answers
+  `Error: IKE Peer in use.`;
+* the AR's own configuration example
+  (<https://support.huawei.com/enterprise/zh/doc/DOC0000707956/52f127e5>)
+  sets **both** `local-address` and `remote-address` on the peer, and its
+  policy refers to the proposal as `proposal default`.
+
+
 ### ④ Console — the router's own CLI
 
 The VRP process listens on **guest TCP 40000** and speaks plain text. On a

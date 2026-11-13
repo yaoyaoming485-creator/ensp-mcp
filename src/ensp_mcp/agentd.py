@@ -290,23 +290,44 @@ _PROMPT_RE = re.compile(r"^(?:<[^>]*>|\[[^\]]*\])\s*$")
 
 # The banner a freshly booted device shows on its console.  It wants a key
 # press before it accepts any command.
+#: the console asks for a key press in two situations: when the device has
+#: just booted ("press any key to get started") and when the session was
+#: left with a "quit" in the user view ("press any key to log on")
 _PRESS_ANY_KEY = "press any key to get started"
+_PRESS_ANY_KEY_LOGIN = "press any key to log on"
 
 
 def _is_prompt(line: str) -> bool:
     """Is ``line`` a VRP prompt?"""
-    return bool(_PROMPT_RE.match(line.strip()))
+    return bool(_PROMPT_RE.match(_strip_ansi(line).strip()))
+
+
+def _strip_ansi(text: str) -> str:
+    """Remove the terminal control sequences the console sends.
+
+    A long command is echoed over several screen lines, and the console
+    inserts a cursor movement (``ESC [ 1 D``) where the line wraps.  Left in,
+    that sequence breaks the comparison with what was typed - the command
+    really did run, but the echo does not look like it.
+    """
+    # CSI sequences (ESC [ ... final byte) and OSC sequences (ESC ] ... BEL)
+    text = re.sub(r"\x1b\[[0-9;?]*[ -/]*[@-~]", "", text)
+    text = re.sub(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
+    # other control characters (bell, backspace, ...)
+    return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
 
 
 def _echo_seen(text: str, out: str) -> bool:
     """Did the console echo ``text`` back?
 
     VRP echoes what was typed, but a long command can be wrapped over several
-    lines, so the comparison ignores whitespace.
+    lines - with a cursor movement in the middle - so the comparison ignores
+    whitespace and the control sequences.
     """
     if not text:
         return True
-    return re.sub(r"\s+", "", text) in re.sub(r"\s+", "", out)
+    clean_out = re.sub(r"\s+", "", _strip_ansi(out))
+    return re.sub(r"\s+", "", text) in clean_out
 
 
 def _bare_prompt(out: str) -> bool:
@@ -444,7 +465,8 @@ class VrpConsole:
         end = time.time() + seconds
         presses = 0
         while time.time() < end:
-            if _PRESS_ANY_KEY in tail.lower():
+            if (_PRESS_ANY_KEY in tail.lower()
+                    or _PRESS_ANY_KEY_LOGIN in tail.lower()):
                 if presses >= 3:
                     break
                 presses += 1
@@ -493,34 +515,46 @@ class VrpConsole:
         return self._drain(wait)
 
     def exec_one(self, cmd: str, wait: float = 1.5, until_prompt: bool = True,
-                 verify: bool = True) -> str:
+                 verify: bool = True, attempts: int = 3) -> str:
         """Run one command, prove that it ran, and return its output.
 
         VRP echoes every command it receives, so the echo is used as proof
         that the command really reached the CLI.  A command that was swallowed
-        by the boot banner is retried once after waking the console; if it
-        still does not come back, the call fails loudly instead of handing
-        the banner to the caller as if it were the output.
+        by the boot banner is retried after waking the console; if it still
+        does not come back, the call fails loudly instead of handing the
+        banner to the caller as if it were the output.
+
+        The echo of a long command is wrapped over several screen lines, and a
+        device whose port keeps flapping interleaves its log messages with
+        that echo - the command then *did* run, but its echo is in pieces.
+        Such a command is therefore tried again a few times before it is
+        called a failure.
         """
         self.ensure_ready()
         text = cmd.rstrip("\r\n")
         out = self._execute(cmd, wait, until_prompt)
-        if verify and not _echo_seen(text, out):
-            if _PRESS_ANY_KEY in out.lower() or _bare_prompt(out):
+        if not verify:
+            return out
+        for attempt in range(1, max(1, attempts) + 1):
+            if _echo_seen(text, out):
+                return out
+            if (_PRESS_ANY_KEY in out.lower() or _PRESS_ANY_KEY_LOGIN in out.lower()
+                    or _bare_prompt(out)):
                 # The command never reached the CLI - it was eaten by the
                 # "press any key" banner, or the session is not accepting
-                # input at all.  Wake the console and try exactly once, so a
+                # input at all.  Wake the console and try again, so a
                 # command is never executed twice.
                 self._ready = False
                 self.wake()
-                out = self._execute(cmd, wait, until_prompt)
-            if not _echo_seen(text, out):
-                raise VrpConsoleError(
-                    f"command {cmd!r} was not executed by {self.guest_ip} "
-                    f"(the console did not echo it); the device is not accepting "
-                    f"input on {self.guest_ip}:{self.port}"
-                )
-        return out
+            elif attempt >= max(1, attempts):
+                break
+            time.sleep(0.4)
+            out = self._execute(cmd, wait, until_prompt)
+        raise VrpConsoleError(
+            f"command {cmd!r} was not executed by {self.guest_ip} "
+            f"(the console did not echo it after {attempts} attempts); the device "
+            f"is not accepting input on {self.guest_ip}:{self.port}"
+        )
 
     def run(self, commands: list[str], wait: float = 1.5,
             until_prompt: bool = True, verify: bool = True) -> str:

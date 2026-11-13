@@ -157,23 +157,50 @@ relay 侧的对应关系：`面板口序 = 客机口序 = VRP 里第 N 个物理
 Failed to open/create the internal network 'HostInterfaceNetworking-VirtualBox Host-Only Ethernet Adapter'
 ```
 
-原因：VirtualBox 把这块 host-only 网卡**归类成了 bridged**（`VBoxManage modifyvm` 会警告
-`Interface "..." is of type bridged`），host-only 就永远打不开。
+这个报错的**根因是 NDIS 过滤器没有给这块 host-only 网卡建实例**（`oracle_VBoxNetLwf`
+驱动在，但针对该适配器的过滤器实例不存在），不是 VirtualBox 把网卡归类成 bridged。
 
-两种处置：
+**实测有效的修法（2026-11-13）**：用管理员权限把这块网卡「禁用 → 启用」一轮，
+过滤器会重新绑定并建出实例，报错立刻消失，host-only 恢复可用：
 
 ```powershell
-# A. 用 NAT（工具原生支持，端口转发由 lab 配置好）
-enspctl lab create ... --nic nat
-
-# B. 新建一块 host-only 网卡，把地址挪过去，再让虚拟机动它
-VBoxManage hostonlyif create                                    # 得到 "...#2"
-VBoxManage hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter" --ip 192.168.99.1 --netmask 255.255.255.0
-VBoxManage hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter #2" --ip 192.168.56.1 --netmask 255.255.255.0
-VBoxManage modifyvm <vm> --nic1 hostonly --hostonlyadapter1 "VirtualBox Host-Only Ethernet Adapter #2"
+# 需要管理员；本机 UAC 是 ConsentPromptBehaviorAdmin=0，可以用 runas 静默提权
+Disable-NetAdapter -Name "以太网 4" -Confirm:$false   # 名字取自 Get-NetAdapter
+Start-Sleep 4
+Enable-NetAdapter  -Name "以太网 4" -Confirm:$false
 ```
 
-用完记得把 `#2` 删掉、原网卡 IP 改回 `192.168.56.1`。
+如果网卡在 Windows 侧被删掉了，先重建并配好地址：
+
+```powershell
+VBoxManage hostonlyif remove "VirtualBox Host-Only Ethernet Adapter"
+VBoxManage hostonlyif create
+VBoxManage hostonlyif ipconfig "VirtualBox Host-Only Ethernet Adapter" --ip 192.168.56.1 --netmask 255.255.255.0
+```
+
+还是不行时的退路：**用 NAT**（工具原生支持，端口转发由 lab 配好）：
+
+```powershell
+enspctl lab create ... --nic nat
+```
+
+代价：客机里**硬编码**了 `192.168.56.1`（媒体服务器与接口流量的宿主地址），
+所以 NAT 下媒体通道不通——设备能起、能读文本、能配置，但设备之间二层流量不通。
+
+### 4.1b 命令「没被执行」但其实执行了
+
+客机回显**长命令**时会插入光标控制序列（`ESC [ 1 D`），把命令折行显示。
+如果回显校验不剥掉这些序列，长命令（如 ACL 的 `rule 5 permit ip source ...`）
+会被误判成「控制台没有回显」，也就是「命令没执行」。
+
+`agentd.py` 的 `_strip_ansi()` 已经处理这件事：回显比对前先去掉 ANSI 序列，
+再忽略空白。若遇到同样的现象，先看控制台原始输出里有没有 `ESC [`。
+
+### 4.1c 控制台停在「press any key to log on」
+
+在用户视图里敲了 `quit`，VRP 会退出配置控制台并停在登录页；再敲命令会被当成
+登录名（`Error: Unrecognized command`）。`VrpConsole.wake()` 现在会认这个横幅并
+自动按一次键回到提示符。回到系统视图请用 `return`，不要用 `quit`。
 
 ### 4.2 日志反复出现 `the device disappeared - restarting it`
 

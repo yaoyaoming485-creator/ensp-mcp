@@ -1,0 +1,16 @@
+# 实验（训）14 IPsec VPN 配置 —— 验证命令
+
+# 1) IKE 对端：两端必须对称
+display ike peer
+
+# 2) IKE 安全提议
+display ike proposal
+
+# 3) IPsec 策略：看它绑在哪个公网口上
+display ipsec policy
+
+# 4) SA：隧道建立后这里应出现 esp-new 的 SA
+display ipsec sa
+
+# 5) 加密统计
+display ipsec statistics
