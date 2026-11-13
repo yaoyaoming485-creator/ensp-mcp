@@ -18,9 +18,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def tracked_files() -> list[str]:
     # -z: NUL separated, so that paths with non-ASCII characters are not
-    # quoted the way git quotes them in its default output
+    # quoted the way git quotes them in its default output.  The bytes are
+    # decoded as UTF-8 - git writes the paths as they are on disk, and the
+    # local code page would mangle them.
     out = subprocess.run(["git", "ls-files", "-z"], cwd=ROOT, capture_output=True,
-                         text=True, check=True).stdout
+                         check=True).stdout.decode("utf-8", "surrogateescape")
     return [line for line in out.split("\0") if line.strip()]
 
 
