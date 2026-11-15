@@ -95,6 +95,10 @@ CONTROL_CODES = {
 
 PROMPT_MARK = "<Huawei>"
 
+#: VRP pages long output and waits for a key.  A reader that does not answer
+#: it sees a truncated output and a console that never comes back.
+MORE_MARK = "-- More --"
+
 
 class AgentdError(RuntimeError):
     """Raised when the guest agent refuses or misbehaves."""
@@ -403,6 +407,13 @@ class VrpConsole:
             self.banner = self.wake() if self.wake_on_connect else ""
             if not self.wake_on_connect:
                 self._ready = True
+            # no paging: a long output would stop at "-- More --" and wait
+            # for a key that nobody presses
+            try:
+                self.sock.sendall(b"screen-length 0 temporary\r\n")
+                self._drain(1.0)
+            except OSError:
+                pass
             return self
         raise VrpConsoleError(
             f"cannot reach VRP console at {self.guest_ip}:{self.port} "
@@ -437,6 +448,12 @@ class VrpConsole:
             if not chunk:
                 break
             out += chunk
+            if MORE_MARK.encode() in chunk:
+                # the device is waiting for a key to show the next page
+                try:
+                    self.sock.sendall(b" ")
+                except OSError:
+                    pass
         return out.decode("utf-8", "replace")
 
     def send(self, text: str) -> None:
@@ -464,6 +481,7 @@ class VrpConsole:
         tail = out
         end = time.time() + seconds
         presses = 0
+        knocks = 0
         while time.time() < end:
             if (_PRESS_ANY_KEY in tail.lower()
                     or _PRESS_ANY_KEY_LOGIN in tail.lower()):
@@ -481,6 +499,17 @@ class VrpConsole:
             if lines and _is_prompt(lines[-1]):
                 self._ready = True
                 break
+            # An idle console prints nothing, so there is no line to judge by
+            # and the wait would run out its whole budget every time.  A
+            # newline makes the device answer with its prompt - which is what
+            # a person at the console would do.
+            if knocks < 3:
+                knocks += 1
+                try:
+                    self.sock.sendall(b"\r\n")
+                except OSError:
+                    pass
+                time.sleep(0.2)
             tail = self._drain(0.4)
             out += tail
         return out

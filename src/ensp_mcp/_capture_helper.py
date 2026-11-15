@@ -77,7 +77,11 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="ensp_mcp._capture_helper")
     ap.add_argument("--duration", type=float, default=10.0)
     ap.add_argument("--out", required=True)
-    ap.add_argument("--filter", action="append", default=[])
+    ap.add_argument("--filters-file", default="",
+                    help="a JSON file with the list of pktmon filter "
+                         "expressions; a file is used because an expression "
+                         "starts with a dash, which the command line would "
+                         "take for an option")
     args = ap.parse_args(argv)
     out = Path(args.out)
     # a marker, so the caller can tell "the helper never started" from
@@ -87,8 +91,16 @@ def main(argv=None):
             "pid=%s argv=%s\n" % (os.getpid(), sys.argv), encoding="utf-8")
     except OSError:
         pass
+    filters = []
+    if args.filters_file:
+        import json
+        try:
+            filters = json.loads(Path(args.filters_file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            print("cannot read the filters: %s" % exc, file=sys.stderr)
+            return 1
     try:
-        path = pktmon_capture(args.duration, args.out, args.filter)
+        path = pktmon_capture(args.duration, args.out, filters)
     except BaseException as exc:  # noqa: BLE001
         # the parent has to be able to tell success from failure
         try:

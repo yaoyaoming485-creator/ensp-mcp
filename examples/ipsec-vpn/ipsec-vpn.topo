@@ -50,7 +50,7 @@
             <interfacePair lineName="Copper" srcIndex="1" tarIndex="1" />
         </line>
         <line srcDeviceID="E8ACB35C-9888-4180-953F-6CCDC1BA326E" destDeviceID="6F25597B-3BA3-4C7F-89A2-F46F010237B2">
-            <interfacePair lineName="Copper" srcIndex="2" tarIndex="2" />
+            <interfacePair lineName="Copper" srcIndex="0" tarIndex="1" />
         </line>
         <line srcDeviceID="6F25597B-3BA3-4C7F-89A2-F46F010237B2" destDeviceID="3E69F900-099E-46BF-B7E5-9A52811E9ACE">
             <interfacePair lineName="Copper" srcIndex="0" tarIndex="0" />

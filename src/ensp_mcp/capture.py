@@ -28,6 +28,7 @@ and the DSCP/ToS byte.  :func:`summarize` turns a capture into that table.
 from __future__ import annotations
 
 import ctypes
+import json
 import os
 import socket
 import struct
@@ -414,13 +415,16 @@ def pktmon_capture(duration: float, out_path: str | Path,
     etl = work / (out.stem + ".etl")
 
     warnings: list[str] = []
+    # The filters of the last capture are still installed, and they decide
+    # what this one sees.  They are cleared first, always - a capture that
+    # silently inherits somebody else's filter is worse than no capture.
+    try:
+        _run(["pktmon", "filter", "remove"], timeout=30)
+    except Exception as exc:  # noqa: BLE001
+        warnings.append(f"could not clear the pktmon filters: {exc}")
     if filters:
         # A filter that cannot be installed must not cost the capture: an
         # unfiltered capture says more than no capture at all.
-        try:
-            _run(["pktmon", "filter", "remove"], timeout=30)
-        except Exception as exc:  # noqa: BLE001
-            warnings.append(f"could not clear the pktmon filters: {exc}")
         for expr in filters:
             res = _run(["pktmon", "filter", "add"] + expr.split(), timeout=30)
             if res.returncode != 0:
@@ -559,8 +563,12 @@ def elevated_capture(duration: float, out_path: str | Path,
     # ShellExecuteW takes the interpreter as the program, so the parameters
     # start with the *script* -- not with the interpreter a second time.
     args = [str(_HELPER), "--duration", str(duration), "--out", str(out)]
-    for expr in filters or []:
-        args += ["--filter", expr]
+    if filters:
+        # the expressions start with a dash, so they travel in a file rather
+        # than on the command line
+        filter_file = out.with_suffix(".filters.json")
+        filter_file.write_text(json.dumps(list(filters)), encoding="utf-8")
+        args += ["--filters-file", str(filter_file)]
     params = " ".join(f'"{a}"' for a in args)
     try:
         rc = ctypes.windll.shell32.ShellExecuteW(
